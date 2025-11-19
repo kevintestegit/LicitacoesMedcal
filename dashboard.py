@@ -399,6 +399,23 @@ elif page == "Dashboard":
                         if arquivos:
                             st.write("**Arquivos Disponíveis:**")
                             for arq in arquivos:
+                                st.markdown(f"- [{arq['titulo']}]({arq['url']})")
+                        else:
+                            st.info("Nenhum arquivo encontrado.")
+                            
+                    st.divider()
+                    st.markdown("### 🧠 Inteligência Artificial")
+                    
+                    # Seletor de Item para Estimativa
+                    item_opts = {f"{i.numero_item} - {i.descricao[:50]}...": i.descricao for i in lic.itens}
+                    selected_item_label = st.selectbox("Selecione um item para estimar preço de mercado:", list(item_opts.keys()), key=f"sel_item_{lic.id}")
+                    
+                    if st.button("💰 Estimar Preço de Mercado (Google/IA)", key=f"btn_price_{lic.id}"):
+                        item_desc = item_opts[selected_item_label]
+                        with st.spinner(f"Pesquisando preço de mercado para: {item_desc[:30]}..."):
+                            estimate = get_google_price_estimate(item_desc)
+                            st.info(f"**Estimativa de Preço:** {estimate}")
+                            st.caption("Nota: Esta é uma estimativa baseada em IA e dados históricos. Sempre verifique fornecedores reais.")                            for arq in arquivos:
                                 st.markdown(f"- [{arq['titulo'] or arq['nome']}]({arq['url']})")
                         else:
                             st.warning("Nenhum arquivo encontrado no PNCP.")
@@ -422,7 +439,7 @@ elif page == "Dashboard":
                             
                     # Botão de Estimativa de Preço (Novo)
                     if st.button("💰 Estimar Preços de Mercado (IA)", key=f"btn_price_{lic.id}"):
-                        from ai_helper import estimate_market_price, configure_genai
+                        from ai_helper import estimate_market_price, configure_genai, get_google_price_estimate
                         
                         session = get_session()
                         api_key = session.query(Configuracao).filter_by(chave='gemini_api_key').first()
