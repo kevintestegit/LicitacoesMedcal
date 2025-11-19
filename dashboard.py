@@ -1,0 +1,695 @@
+import streamlit as st
+import pandas as pd
+import pncp_client
+from pncp_client import PNCPClient
+from external_scrapers import ConLicitacaoScraper, PortalComprasPublicasScraper
+import importlib
+importlib.reload(pncp_client) # Força recarregamento para garantir atualização dos filtros
+from database import init_db, get_session, Produto, Licitacao, ItemLicitacao, Configuracao
+from sqlalchemy import func
+from datetime import datetime
+
+# Inicializa Banco
+init_db()
+
+st.set_page_config(page_title="Medcal Licitações", layout="wide", page_icon="🏥")
+
+# --- SIDEBAR ---
+st.sidebar.title("🏥 Medcal Gestão")
+page = st.sidebar.radio("Navegação", ["Dashboard", "Buscar Licitações", "Meu Catálogo", "📥 Importar & Relatórios", "Configurações"])
+
+# --- FUNÇÕES AUXILIARES ---
+def salvar_produtos(df_editor):
+    session = get_session()
+    # Lógica simplificada: deleta tudo e recria (para protótipo)
+    # Em produção, faríamos upsert
+    session.query(Produto).delete()
+    
+    for index, row in df_editor.iterrows():
+        if row['Nome do Produto']:
+            p = Produto(
+                nome=row['Nome do Produto'],
+                palavras_chave=row['Palavras-Chave'],
+                preco_custo=float(row['Preço de Custo']),
+                margem_minima=float(row['Margem (%)']),
+                preco_referencia=float(row.get('Preço Referência', 0.0)),
+                fonte_referencia=str(row.get('Fonte Referência', ""))
+            )
+            session.add(p)
+    session.commit()
+    session.close()
+    st.success("Catálogo atualizado!")
+
+def match_itens(session, licitacao_id):
+    """Tenta cruzar itens da licitação com produtos do catálogo"""
+    licitacao = session.query(Licitacao).filter_by(id=licitacao_id).first()
+    produtos = session.query(Produto).all()
+    
+    count = 0
+    for item in licitacao.itens:
+        item_desc = item.descricao.upper()
+        melhor_match = None
+        
+        for prod in produtos:
+            keywords = [k.strip().upper() for k in prod.palavras_chave.split(',')]
+            # Se QUALQUER keyword estiver na descrição do item
+            if any(k in item_desc for k in keywords):
+                melhor_match = prod
+                break # Pega o primeiro match por enquanto
+        
+        if melhor_match:
+            item.produto_match_id = melhor_match.id
+            count += 1
+            
+    session.commit()
+    return count
+
+# --- PÁGINAS ---
+
+if page == "Meu Catálogo":
+    st.header("📦 Catálogo de Produtos")
+    st.info("Cadastre aqui os produtos que a Medcal vende. O sistema usará as 'Palavras-Chave' para encontrar oportunidades.")
+    
+    session = get_session()
+    produtos = session.query(Produto).all()
+    session.close()
+    
+    data = []
+    for p in produtos:
+        data.append({
+            "Nome do Produto": p.nome,
+            "Palavras-Chave": p.palavras_chave,
+            "Preço de Custo": p.preco_custo,
+            "Margem (%)": p.margem_minima,
+            "Preço Referência": p.preco_referencia,
+            "Fonte Referência": p.fonte_referencia
+        })
+    
+    if not data:
+        data = [{
+            "Nome do Produto": "", 
+            "Palavras-Chave": "", 
+            "Preço de Custo": 0.0, 
+            "Margem (%)": 30.0,
+            "Preço Referência": 0.0,
+            "Fonte Referência": ""
+        }]
+        
+    df = pd.DataFrame(data)
+    
+    edited_df = st.data_editor(df, num_rows="dynamic", use_container_width=True)
+    
+    if st.button("💾 Salvar Alterações"):
+        salvar_produtos(edited_df)
+
+elif page == "Buscar Licitações":
+    st.header("🔍 Buscar Novas Oportunidades")
+    
+    col1, col2 = st.columns(2)
+    with col1:
+        st.info("📅 Buscando oportunidades com início de proposta HOJE ou FUTURO.")
+        dias = 15 # Hardcoded: 15 dias é suficiente para pegar pregões abertos (prazo legal ~8 dias) e evita estourar paginação da API
+    with col2:
+        estados = st.multiselect("Estados:", ['RN', 'PB', 'PE', 'AL', 'CE', 'BA'], default=['RN', 'PB', 'PE', 'AL'])
+        
+    busca_ampla = st.checkbox("🌍 Modo Varredura Total (Ignorar filtros de palavras-chave)", 
+                              help="Se marcado, traz TUDO o que foi publicado, sem filtrar por termos médicos. Útil para garantir que nada passou batido.")
+    
+    st.markdown("#### Fontes Extras")
+    col_ext1, col_ext2 = st.columns(2)
+    with col_ext1:
+        use_conlicitacao = st.checkbox("ConLicitação (Desativado Temporariamente)", value=False, disabled=True, help="Desativado temporariamente para ajustes de conexão.")
+    with col_ext2:
+        use_pcp = st.checkbox("Portal de Compras Públicas", value=True)
+
+    # Filtro de futuro agora é MANDATÓRIO
+    filtro_futuro = True 
+
+    if st.button("🚀 Iniciar Varredura no PNCP"):
+        client = PNCPClient()
+        
+        # Pega termos do catálogo para filtrar a busca inicial
+        session = get_session()
+        prods = session.query(Produto).all()
+        all_keywords = []
+        for p in prods:
+            all_keywords.extend([k.strip().upper() for k in p.palavras_chave.split(',')])
+        all_keywords = list(set(all_keywords)) # Remove duplicatas
+        
+        # Se busca ampla, ignoramos a validação de catálogo vazio
+        if not all_keywords and not busca_ampla:
+            st.warning("Seu catálogo está vazio! Cadastre produtos para gerar palavras-chave de busca.")
+        else:
+            with st.status("Buscando no PNCP...", expanded=True) as status:
+                
+                if busca_ampla:
+                    st.write("⚠️ MODO VARREDURA: Buscando todas as licitações (sem filtro de termos)...")
+                    termos_busca = [] # Lista vazia desativa o filtro no client
+                else:
+                    # Combina termos do catálogo com os termos padrão da área médica
+                    termos_busca = list(set(all_keywords + client.TERMOS_POSITIVOS_PADRAO))
+                    st.write(f"Filtrando por {len(termos_busca)} termos (Catálogo + Padrão Medcal)...")
+                
+                # Busca PNCP
+                resultados_raw = client.buscar_oportunidades(dias, estados, termos_positivos=termos_busca)
+                
+                # Busca Fontes Extras
+                if use_conlicitacao:
+                    st.write("Buscando no ConLicitação...")
+                    session = get_session()
+                    login = session.query(Configuracao).filter_by(chave='conlicitacao_login').first()
+                    senha = session.query(Configuracao).filter_by(chave='conlicitacao_senha').first()
+                    session.close()
+                    
+                    scraper_con = ConLicitacaoScraper(login.valor if login else None, senha.valor if senha else None)
+                    res_con = scraper_con.buscar_oportunidades(termos_busca)
+                    resultados_raw.extend(res_con)
+                    
+                if use_pcp:
+                    st.write("Buscando no Portal de Compras Públicas...")
+                    session = get_session()
+                    login = session.query(Configuracao).filter_by(chave='pcp_login').first()
+                    senha = session.query(Configuracao).filter_by(chave='pcp_senha').first()
+                    session.close()
+                    
+                    scraper_pcp = PortalComprasPublicasScraper(login.valor if login else None, senha.valor if senha else None)
+                    res_pcp = scraper_pcp.buscar_oportunidades(termos_busca)
+                    resultados_raw.extend(res_pcp)
+                
+                total_api = len(resultados_raw)
+                
+                # Filtro de Data de Início de Proposta (Pós-processamento)
+                resultados = []
+                hoje_date = datetime.now().date()
+                ignorados_data = 0
+                
+                for res in resultados_raw:
+                    # Lógica de Filtro Futuro (Sempre Ativa)
+                    inicio_str = res.get('data_inicio_proposta')
+                    should_exclude = False
+                    
+                    # 1. Tenta filtrar pela Data de Início de Proposta
+                    if inicio_str:
+                        try:
+                            inicio_dt = datetime.fromisoformat(inicio_str).date()
+                            if inicio_dt < hoje_date:
+                                should_exclude = True
+                        except:
+                            pass 
+                    
+                    # 2. Fallback: Se não tem data de início
+                    else:
+                        encerramento_str = res.get('data_encerramento_proposta')
+                        if encerramento_str:
+                            try:
+                                fim_dt = datetime.fromisoformat(encerramento_str).date()
+                                if fim_dt < hoje_date:
+                                    should_exclude = True
+                            except:
+                                pass
+                                
+                    if should_exclude:
+                        ignorados_data += 1
+                        continue
+
+                    # --- Lógica de Priorização (Match Score) ---
+                    score = 0
+                    matched_tags = []
+                    obj_lower = res['objeto'].lower()
+                    
+                    # Verifica match com produtos do catálogo
+                    # Usamos 'prods' que já foi carregado lá em cima
+                    for p in prods:
+                        p_keywords = [k.strip().lower() for k in p.palavras_chave.split(',')]
+                        # Se qualquer keyword do produto estiver no objeto, conta ponto
+                        if any(k in obj_lower for k in p_keywords if len(k) > 3): # Ignora keywords muito curtas para evitar falso positivo
+                            score += 10 # Peso alto para match de catálogo
+                            matched_tags.append(p.nome)
+                            break # Conta apenas uma vez por produto para não inflar score com sinônimos
+                    
+                    # Verifica termos positivos padrão (peso menor)
+                    for t in client.TERMOS_POSITIVOS_PADRAO:
+                        if t.lower() in obj_lower:
+                            score += 1
+                            
+                    res['match_score'] = score
+                    res['matched_products'] = list(set(matched_tags)) # Remove duplicatas
+
+                    resultados.append(res)
+
+                # Ordena por Score (Decrescente)
+                resultados.sort(key=lambda x: x.get('match_score', 0), reverse=True)
+
+                st.write(f"  Diagnóstico da Busca:")
+                st.write(f"- Encontrados na API: {total_api}")
+                st.write(f"- Ignorados pelo Filtro de Data (Passado): {ignorados_data}")
+                st.write(f"- Restantes para Importação: {len(resultados)}")
+                
+                # Salvar no Banco
+                novos = 0
+                ignorados_duplicados = 0
+                
+                for res in resultados:
+                    exists = session.query(Licitacao).filter_by(pncp_id=res['pncp_id']).first()
+                    if not exists:
+                        lic = Licitacao(
+                            pncp_id=res['pncp_id'],
+                            orgao=res['orgao'],
+                            uf=res['uf'],
+                            modalidade=res['modalidade'],
+                            data_sessao=datetime.fromisoformat(res['data_sessao']) if res.get('data_sessao') else None,
+                            data_publicacao=datetime.fromisoformat(res['data_publicacao']) if res.get('data_publicacao') else None,
+                            data_inicio_proposta=datetime.fromisoformat(res['data_inicio_proposta']) if res.get('data_inicio_proposta') else None,
+                            data_encerramento_proposta=datetime.fromisoformat(res['data_encerramento_proposta']) if res.get('data_encerramento_proposta') else None,
+                            objeto=res['objeto'],
+                            link=res['link']
+                        )
+                        session.add(lic)
+                        session.flush()
+
+                        # Buscar itens
+                        itens_api = client.buscar_itens(res)
+                        for i in itens_api:
+                            item_db = ItemLicitacao(
+                                licitacao_id=lic.id,
+                                numero_item=i['numero'],
+                                descricao=i['descricao'],
+                                quantidade=i['quantidade'],
+                                unidade=i['unidade'],
+                                valor_estimado=i['valor_estimado'],
+                                valor_unitario=i['valor_unitario']
+                            )
+                            session.add(item_db)
+                        
+                        match_itens(session, lic.id)
+                        novos += 1
+                    else:
+                        ignorados_duplicados += 1
+                
+                session.commit()
+                st.success(f"Busca finalizada! {novos} novas licitações importadas.")
+                session.close()
+        
+    st.divider()
+    with st.expander("Limpeza do banco de dados"):
+        st.warning("Isso apagará todas as licitações importadas.")
+        if st.button("Limpar Histórico de Licitações"):
+            session = get_session()
+            session.query(ItemLicitacao).delete()
+            session.query(Licitacao).delete()
+            session.commit()
+            session.close()
+            st.success("Banco de dados limpo!")
+            st.rerun()
+
+elif page == "Dashboard":
+    st.header("Painel de Controle")
+    
+    session = get_session()
+    licitacoes_db = session.query(Licitacao).all()
+    
+    # Ordenação Inteligente: Primeiro por número de itens com match, depois por data (mais recente)
+    licitacoes = sorted(
+        licitacoes_db, 
+        key=lambda x: (sum(1 for i in x.itens if i.produto_match_id is not None), x.data_sessao or datetime.min), 
+        reverse=True
+    )
+    
+    if not licitacoes:
+        st.info("Nenhuma licitação no banco. Vá em 'Buscar Licitações' para começar.")
+    else:
+        for lic in licitacoes:
+            # Contar itens com match
+            total_itens = len(lic.itens)
+            matches = sum(1 for i in lic.itens if i.produto_match_id is not None)
+            
+            # Ícone e cor baseados no match
+            if matches > 0:
+                icon = "🔥" # Fogo para alta prioridade
+                label_match = f":green[**{matches} itens do seu catálogo!**]"
+            else:
+                icon = "⚠️"
+                label_match = f"{matches}/{total_itens} itens compatíveis"
+            
+            with st.expander(f"{icon} [{lic.uf}] {lic.orgao} - {label_match}"):
+                st.write(f"**Objeto:** {lic.objeto}")
+                st.write(f"**Sessão:** {lic.data_sessao} | **Início Proposta:** {lic.data_inicio_proposta} | **Fim Proposta:** {lic.data_encerramento_proposta}")
+                st.write(f"**Link:** [Acessar PNCP]({lic.link})")
+                
+                # Tabela de Itens
+                data_itens = []
+                valor_total_proposta = 0
+                
+                for item in lic.itens:
+                    match_nome = "❌ Sem Match"
+                    custo = 0
+                    preco_venda = 0
+                    lucro = 0
+                    preco_ref = 0
+                    fonte_ref = "-"
+                    v_unit_edital = item.valor_unitario if item.valor_unitario else 0
+                    diff_percent = 0
+                    
+                    if item.produto_match:
+                        match_nome = f"✅ {item.produto_match.nome}"
+                        custo = item.produto_match.preco_custo
+                        margem = item.produto_match.margem_minima / 100
+                        preco_venda = custo * (1 + margem)
+                        lucro = (preco_venda - custo) * item.quantidade
+                        valor_total_proposta += preco_venda * item.quantidade
+                        
+                        preco_ref = item.produto_match.preco_referencia
+                        fonte_ref = item.produto_match.fonte_referencia
+                        
+                        if v_unit_edital > 0 and custo > 0:
+                            diff_percent = ((v_unit_edital - custo) / custo) * 100
+                    
+                    data_itens.append({
+                        "Item": item.numero_item,
+                        "Descrição Edital": item.descricao,
+                        "Qtd": item.quantidade,
+                        "Unidade": item.unidade,
+                        "V. Unit. Edital": f"R$ {v_unit_edital:,.2f}",
+                        "Meu Custo": f"R$ {custo:,.2f}" if custo > 0 else "-",
+                        "Ref. Mercado": f"R$ {preco_ref:,.2f} ({fonte_ref})" if preco_ref > 0 else "-",
+                        "Dif. Custo %": f"{diff_percent:+.1f}%" if diff_percent != 0 else "-",
+                        "Match": match_nome
+                    })
+                    
+                st.dataframe(pd.DataFrame(data_itens), use_container_width=True)
+                
+                col_a, col_b = st.columns(2)
+                with col_a:
+                    if matches > 0:
+                        st.metric("Valor Total da Proposta (Itens com Match)", f"R$ {valor_total_proposta:,.2f}")
+                    else:
+                        st.warning("Nenhum item deste edital corresponde aos produtos do seu catálogo.")
+                
+                with col_b:
+                    if st.button("📄 Ver Arquivos do Edital", key=f"btn_arq_{lic.id}"):
+                        client = PNCPClient()
+                        # Reconstrói dict mínimo para buscar arquivos
+                        lic_dict = {
+                            "cnpj": lic.pncp_id.split('-')[0],
+                            "ano": lic.pncp_id.split('-')[1],
+                            "seq": lic.pncp_id.split('-')[2]
+                        }
+                        arquivos = client.buscar_arquivos(lic_dict)
+                        
+                        if arquivos:
+                            st.write("**Arquivos Disponíveis:**")
+                            for arq in arquivos:
+                                st.markdown(f"- [{arq['titulo'] or arq['nome']}]({arq['url']})")
+                        else:
+                            st.warning("Nenhum arquivo encontrado no PNCP.")
+                            
+                    # Botão de IA
+                    if st.button("✨ Gerar Resumo IA", key=f"btn_ai_{lic.id}"):
+                        from ai_helper import summarize_bidding, configure_genai
+                        
+                        session = get_session()
+                        api_key = session.query(Configuracao).filter_by(chave='gemini_api_key').first()
+                        session.close()
+                        
+                        if api_key and api_key.valor:
+                            configure_genai(api_key.valor)
+                            with st.spinner("A IA está analisando o edital..."):
+                                resumo = summarize_bidding(lic, lic.itens)
+                                st.markdown("### 🤖 Análise da IA")
+                                st.markdown(resumo)
+                        else:
+                            st.error("Configure a API Key do Gemini na aba Configurações primeiro!")
+                            
+                    # Botão de Estimativa de Preço (Novo)
+                    if st.button("💰 Estimar Preços de Mercado (IA)", key=f"btn_price_{lic.id}"):
+                        from ai_helper import estimate_market_price, configure_genai
+                        
+                        session = get_session()
+                        api_key = session.query(Configuracao).filter_by(chave='gemini_api_key').first()
+                        session.close()
+                        
+                        if api_key and api_key.valor:
+                            configure_genai(api_key.valor)
+                            st.write("### 💰 Estimativas de Mercado (IA)")
+                            
+                            # Estima apenas para os primeiros 5 itens para não demorar muito
+                            itens_para_estimar = lic.itens[:5]
+                            
+                            for item in itens_para_estimar:
+                                with st.spinner(f"Estimando: {item.descricao[:30]}..."):
+                                    estimativa = estimate_market_price(item.descricao)
+                                    st.markdown(f"**{item.descricao}**: {estimativa}")
+                            
+                            if len(lic.itens) > 5:
+                                st.info("Estimativa limitada aos 5 primeiros itens para economizar tempo.")
+                        else:
+                            st.error("Configure a API Key do Gemini na aba Configurações primeiro!")
+
+elif page == "Configurações":
+    st.header("⚙️ Configurações do Sistema")
+    
+    session = get_session()
+    config_termos = session.query(Configuracao).filter_by(chave='termos_busca_padrao').first()
+    
+    if not config_termos:
+        st.error("Configuração de termos não encontrada! Rode o script de migração.")
+    else:
+        # --- Seção 1: Gerenciador de Termos ---
+        st.subheader("📝 Termos de Busca Padrão (Global)")
+        st.info("Esses termos são usados para encontrar editais que podem ter descrições genéricas (ex: 'Material Hospitalar'). O sistema baixa esses editais e procura seus produtos dentro deles.")
+        
+        termos_atuais = config_termos.valor
+        novos_termos = st.text_area("Lista de Termos (separados por vírgula)", value=termos_atuais, height=150)
+        
+        if st.button("Salvar Termos"):
+            config_termos.valor = novos_termos
+            session.commit()
+            st.success("Termos de busca atualizados com sucesso!")
+            st.rerun()
+            
+        st.divider()
+        
+        # --- Seção 2: Configuração IA (Gemini) ---
+        st.subheader("🤖 Configuração da IA (Gemini)")
+        st.markdown("Configure sua chave de API do Google Gemini para ativar resumos automáticos e estimativas de preço.")
+        
+        config_api_key = session.query(Configuracao).filter_by(chave='gemini_api_key').first()
+        if not config_api_key:
+            config_api_key = Configuracao(chave='gemini_api_key', valor='')
+            session.add(config_api_key)
+            session.commit()
+            
+        nova_key = st.text_input("Gemini API Key", value=config_api_key.valor, type="password")
+        if st.button("Salvar API Key"):
+            config_api_key.valor = nova_key
+            session.commit()
+            st.success("API Key salva com sucesso!")
+            
+        st.divider()
+        
+        # --- Seção 3: Credenciais Portais Externos ---
+        st.subheader("🔐 Credenciais de Portais Externos")
+        st.markdown("Configure o acesso para buscar no ConLicitação e Portal de Compras Públicas.")
+        
+        col_cred1, col_cred2 = st.columns(2)
+        
+        with col_cred1:
+            st.markdown("**ConLicitação**")
+            conf_cl_login = session.query(Configuracao).filter_by(chave='conlicitacao_login').first()
+            conf_cl_pass = session.query(Configuracao).filter_by(chave='conlicitacao_senha').first()
+            
+            if not conf_cl_login:
+                conf_cl_login = Configuracao(chave='conlicitacao_login', valor='')
+                session.add(conf_cl_login)
+            if not conf_cl_pass:
+                conf_cl_pass = Configuracao(chave='conlicitacao_senha', valor='')
+                session.add(conf_cl_pass)
+                
+            new_cl_login = st.text_input("Login ConLicitação", value=conf_cl_login.valor)
+            new_cl_pass = st.text_input("Senha ConLicitação", value=conf_cl_pass.valor, type="password")
+            
+        with col_cred2:
+            st.markdown("**Portal de Compras Públicas**")
+            conf_pcp_login = session.query(Configuracao).filter_by(chave='pcp_login').first()
+            conf_pcp_pass = session.query(Configuracao).filter_by(chave='pcp_senha').first()
+            
+            if not conf_pcp_login:
+                conf_pcp_login = Configuracao(chave='pcp_login', valor='')
+                session.add(conf_pcp_login)
+            if not conf_pcp_pass:
+                conf_pcp_pass = Configuracao(chave='pcp_senha', valor='')
+                session.add(conf_pcp_pass)
+                
+            new_pcp_login = st.text_input("Login PCP", value=conf_pcp_login.valor)
+            new_pcp_pass = st.text_input("Senha PCP", value=conf_pcp_pass.valor, type="password")
+            
+        if st.button("Salvar Credenciais"):
+            conf_cl_login.valor = new_cl_login
+            conf_cl_pass.valor = new_cl_pass
+            conf_pcp_login.valor = new_pcp_login
+            conf_pcp_pass.valor = new_pcp_pass
+            session.commit()
+            st.success("Credenciais salvas!")
+            
+        st.markdown("### 🧪 Teste de Conexão")
+        if st.button("Testar Conexão com Portais"):
+            with st.status("Testando conexões...", expanded=True):
+                # Teste ConLicitação
+                st.write("Testando ConLicitação...")
+                st.warning("Teste do ConLicitação temporariamente desativado.")
+                # scraper_cl = ConLicitacaoScraper(new_cl_login, new_cl_pass)
+                # ok_cl, msg_cl = scraper_cl._fazer_login()
+                # if ok_cl:
+                #     st.success(f"ConLicitação: {msg_cl}")
+                # else:
+                #     st.error(f"ConLicitação: {msg_cl}")
+                    
+                # Teste PCP
+                st.write("Testando Portal de Compras Públicas...")
+                scraper_pcp = PortalComprasPublicasScraper(new_pcp_login, new_pcp_pass)
+                ok_pcp, msg_pcp = scraper_pcp._fazer_login()
+                if ok_pcp:
+                    st.success(f"Portal Compras Públicas: {msg_pcp}")
+                else:
+                    st.error(f"Portal Compras Públicas: {msg_pcp}")
+            
+        st.divider()
+        
+        # --- Seção 2: Importador CNAE ---
+        st.subheader("🏭 Gerador de Keywords via CNAE")
+        st.markdown("Digite o código CNAE da sua empresa para adicionar automaticamente termos técnicos relevantes à sua lista de busca.")
+        
+        cnae_input = st.text_input("Código CNAE (ex: 4645-1/01)", placeholder="0000-0/00")
+        
+        if st.button("Gerar e Adicionar Termos"):
+            from cnae_data import get_keywords_by_cnae
+            
+            keywords_cnae = get_keywords_by_cnae(cnae_input)
+            
+            if keywords_cnae:
+                # Lógica de Merge
+                lista_atual = [t.strip() for t in termos_atuais.split(',')]
+                adicionados = []
+                
+                for kw in keywords_cnae:
+                    if kw not in lista_atual:
+                        lista_atual.append(kw)
+                        adicionados.append(kw)
+                
+                if adicionados:
+                    config_termos.valor = ", ".join(lista_atual)
+                    session.commit()
+                    st.success(f"✅ {len(adicionados)} novos termos adicionados: {', '.join(adicionados)}")
+                    st.rerun()
+                else:
+                    st.warning("Todos os termos desse CNAE já estão na sua lista!")
+            else:
+                st.error("CNAE não encontrado ou sem keywords mapeadas. Tente outro código.")
+    
+    session.close()
+            
+    session.close()
+
+elif page == "📥 Importar & Relatórios":
+    st.header("📥 Central de Importação e Relatórios")
+    st.info("Importe planilhas do ConLicitação, Portal de Compras Públicas ou qualquer Excel/CSV para analisar automaticamente.")
+    
+    from importer import load_data, smart_map_columns, normalize_imported_data
+    from database import Produto
+    
+    uploaded_file = st.file_uploader("Carregar Arquivo (Excel ou CSV)", type=['xlsx', 'xls', 'csv'])
+    
+    if uploaded_file:
+        df = load_data(uploaded_file)
+        
+        if df is not None:
+            st.write("### 1. Pré-visualização dos Dados")
+            st.dataframe(df.head())
+            
+            st.write("### 2. Mapeamento de Colunas")
+            mapping = smart_map_columns(df)
+            
+            col1, col2, col3 = st.columns(3)
+            with col1:
+                mapping["descricao"] = st.selectbox("Coluna de Descrição/Objeto", df.columns, index=df.columns.get_loc(mapping["descricao"]) if mapping["descricao"] in df.columns else 0)
+                mapping["quantidade"] = st.selectbox("Coluna de Quantidade", df.columns, index=df.columns.get_loc(mapping["quantidade"]) if mapping["quantidade"] in df.columns else 0)
+            with col2:
+                mapping["valor_unitario"] = st.selectbox("Coluna de Valor Unitário (Estimado)", df.columns, index=df.columns.get_loc(mapping["valor_unitario"]) if mapping["valor_unitario"] in df.columns else 0)
+                mapping["unidade"] = st.selectbox("Coluna de Unidade", df.columns, index=df.columns.get_loc(mapping["unidade"]) if mapping["unidade"] in df.columns else 0)
+            with col3:
+                mapping["orgao"] = st.selectbox("Coluna de Órgão/Comprador", df.columns, index=df.columns.get_loc(mapping["orgao"]) if mapping["orgao"] in df.columns else 0)
+                mapping["numero_edital"] = st.selectbox("Coluna de Nº Edital", df.columns, index=df.columns.get_loc(mapping["numero_edital"]) if mapping["numero_edital"] in df.columns else 0)
+                
+            if st.button("✅ Confirmar e Analisar"):
+                st.write("### 3. Resultado da Análise")
+                
+                # Normaliza
+                df_norm = normalize_imported_data(df, mapping)
+                
+                # Busca Produtos do Banco para Match
+                session = get_session()
+                produtos = session.query(Produto).all()
+                
+                matches = []
+                
+                progress_bar = st.progress(0)
+                total_items = len(df_norm)
+                
+                for idx, row in df_norm.iterrows():
+                    item_desc = str(row['descricao']).upper()
+                    melhor_match = None
+                    
+                    # Lógica de Match (Cópia simplificada do match_itens)
+                    for prod in produtos:
+                        keywords = [k.strip().upper() for k in prod.palavras_chave.split(',')]
+                        if any(k in item_desc for k in keywords):
+                            melhor_match = prod
+                            break
+                    
+                    if melhor_match:
+                        lucro_bruto = (row['valor_unitario'] - melhor_match.preco_custo) * row['quantidade']
+                        margem = ((row['valor_unitario'] - melhor_match.preco_custo) / row['valor_unitario']) * 100 if row['valor_unitario'] > 0 else 0
+                        
+                        matches.append({
+                            "Edital": row['numero_edital'],
+                            "Órgão": row['orgao'],
+                            "Item Edital": row['descricao'],
+                            "Qtd": row['quantidade'],
+                            "Valor Edital (Unit)": row['valor_unitario'],
+                            "Meu Produto": melhor_match.nome,
+                            "Meu Custo": melhor_match.preco_custo,
+                            "Lucro Potencial": lucro_bruto,
+                            "Margem (%)": margem
+                        })
+                    
+                    progress_bar.progress((idx + 1) / total_items)
+                
+                session.close()
+                
+                if matches:
+                    df_matches = pd.DataFrame(matches)
+                    st.success(f"Encontradas {len(matches)} oportunidades compatíveis com seu catálogo!")
+                    
+                    # Formatação para exibição
+                    st.dataframe(
+                        df_matches.style.format({
+                            "Valor Edital (Unit)": "R$ {:.2f}",
+                            "Meu Custo": "R$ {:.2f}",
+                            "Lucro Potencial": "R$ {:.2f}",
+                            "Margem (%)": "{:.1f}%"
+                        })
+                    )
+                    
+                    # Botão de Exportar Relatório
+                    # CSV por enquanto para ser rápido, Excel requer mais libs/io bytes
+                    csv = df_matches.to_csv(index=False).encode('utf-8')
+                    st.download_button(
+                        label="📥 Baixar Relatório (CSV)",
+                        data=csv,
+                        file_name='relatorio_oportunidades.csv',
+                        mime='text/csv',
+                    )
+                else:
+                    st.warning("Nenhum item da planilha correspondeu aos produtos do seu catálogo.")
+        else:
+            st.error("Formato de arquivo não suportado ou arquivo vazio.")
