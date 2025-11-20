@@ -2,12 +2,6 @@
 # Fonte: Adaptação dos termos observados no pncp_client.py e conhecimento geral
 
 CNAE_KEYWORDS = {
-    "4646-0/01": [ # Comércio atacadista de cosméticos e produtos de perfumaria
-        "HIGIENE", "COSMETICOS", "PERFUMARIA", "SABONETE", "SHAMPOO", "CREME DENTAL"
-    ],
-    "4646-0/02": [ # Comércio atacadista de produtos de higiene pessoal
-        "HIGIENE PESSOAL", "FRALDA", "ABSORVENTE", "PAPEL HIGIENICO", "LENCO UMEDECIDO"
-    ],
     "4649-4/08": [ # Comércio atacadista de produtos de higiene, limpeza e conservação domiciliar
         "LIMPEZA", "SANEANTE", "SANEANTES", "DOMISSANITARIO", "DOMISSANITÁRIO", 
         "DETERGENTE", "DESINFETANTE", "AGUA SANITARIA", "SABAO"
@@ -16,7 +10,7 @@ CNAE_KEYWORDS = {
         "SANEANTE", "DOMISSANITARIO", "INSETICIDA", "RATICIDA"
     ],
     "4664-8/00": [ # Comércio atacadista de máquinas, aparelhos e equipamentos para uso odonto-médico-hospitalar; partes e peças
-        "PECA", "PEÇA", "PECAS", "PEÇAS", "ACESSORIO", "ACESSÓRIO", 
+        "ACESSORIO", "ACESSÓRIO", 
         "MANUTENCAO", "MANUTENÇÃO", "REPARO", "CALIBRACAO", "CALIBRAÇÃO"
     ],
     "4645-1/01": [ # Comércio atacadista de instrumentos e materiais para uso médico, cirúrgico, hospitalar e de laboratórios

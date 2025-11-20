@@ -2,7 +2,7 @@ import streamlit as st
 import pandas as pd
 import pncp_client
 from pncp_client import PNCPClient
-from external_scrapers import ConLicitacaoScraper, PortalComprasPublicasScraper, FemurnScraper
+from external_scrapers import FemurnScraper, FamupScraper, AmupeScraper, AmaScraper, MaceioScraper, MaceioInvesteScraper, MaceioSaudeScraper
 from notifications import WhatsAppNotifier
 from ai_helper import get_google_price_estimate
 import importlib
@@ -107,23 +107,38 @@ if page == "Meu Catálogo":
 elif page == "Buscar Licitações":
     st.header("🔍 Buscar Novas Oportunidades")
     
-    col1, col2 = st.columns(2)
-    with col1:
-        st.info("📅 Buscando oportunidades com início de proposta HOJE ou FUTURO.")
-        dias = 15 # Hardcoded: 15 dias é suficiente para pegar pregões abertos (prazo legal ~8 dias) e evita estourar paginação da API
-    with col2:
-        estados = st.multiselect("Estados:", ['RN', 'PB', 'PE', 'AL', 'CE', 'BA'], default=['RN', 'PB', 'PE', 'AL'])
+    # Período fixo de busca (60 dias é suficiente para capturar todos os pregões abertos)
+    dias = 60
+
+    estados = st.multiselect("Estados:", ['RN', 'PB', 'PE', 'AL', 'CE', 'BA'], default=['RN', 'PB', 'PE', 'AL'])
         
-    busca_ampla = st.checkbox("🌍 Modo Varredura Total (Ignorar filtros de palavras-chave)", 
+    busca_ampla = st.checkbox("🌍 Modo Varredura Total (Ignorar filtros de palavras-chave)",
                               help="Se marcado, traz TUDO o que foi publicado, sem filtrar por termos médicos. Útil para garantir que nada passou batido.")
-    
-    st.markdown("#### Fontes Extras")
-    col_ext1, col_ext2 = st.columns(2)
+
+    st.info("🎯 **Regra de Ouro:** Sistema mostra APENAS licitações com prazo de proposta ABERTO (data de encerramento >= hoje)")
+
+    st.markdown("#### Fontes Extras - Diários Oficiais Municipais")
+    col_ext1, col_ext2, col_ext3 = st.columns(3)
     with col_ext1:
-        use_conlicitacao = st.checkbox("ConLicitação (Desativado Temporariamente)", value=False, disabled=True, help="Desativado temporariamente para ajustes de conexão.")
+        st.markdown("**Rio Grande do Norte**")
+        use_femurn = st.checkbox("FEMURN (RN)", value=True, help="Diário Oficial dos Municípios do RN")
     with col_ext2:
-        use_pcp = st.checkbox("Portal de Compras Públicas", value=True)
-        use_femurn = st.checkbox("FEMURN (RN)", value=True, help="Link direto para o Diário Oficial dos Municípios do RN")
+        st.markdown("**Paraíba**")
+        use_famup = st.checkbox("FAMUP (PB)", value=True, help="Diário Oficial dos Municípios da PB")
+    with col_ext3:
+        st.markdown("**Pernambuco**")
+        use_amupe = st.checkbox("AMUPE (PE)", value=True, help="Diário Oficial dos Municípios de PE")
+
+    st.markdown("**Alagoas**")
+    col_al1, col_al2, col_al3, col_al4 = st.columns(4)
+    with col_al1:
+        use_ama = st.checkbox("AMA (AL)", value=True, help="Associação dos Municípios Alagoanos")
+    with col_al2:
+        use_maceio = st.checkbox("Maceió", value=True, help="Diário Oficial de Maceió")
+    with col_al3:
+        use_maceio_investe = st.checkbox("Maceió Investe", value=True, help="Diário Oficial Maceió Investe")
+    with col_al4:
+        use_maceio_saude = st.checkbox("Maceió Saúde", value=True, help="Diário Oficial Maceió Saúde")
 
     # Filtro de futuro agora é MANDATÓRIO
     filtro_futuro = True 
@@ -150,42 +165,61 @@ elif page == "Buscar Licitações":
                     termos_busca = [] # Lista vazia desativa o filtro no client
                 else:
                     # Combina termos do catálogo com os termos padrão da área médica
-                    termos_busca = list(set(all_keywords + client.TERMOS_POSITIVOS_PADRAO))
-                    st.write(f"Filtrando por {len(termos_busca)} termos (Catálogo + Padrão Medcal)...")
+                    # MUDANÇA SOLICITADA: Usar APENAS termos padrão positivos (ignorando CNAE/Catálogo por enquanto para limpar "sujeira")
+                    # termos_busca = list(set(all_keywords + client.TERMOS_POSITIVOS_PADRAO))
+                    termos_busca = client.TERMOS_POSITIVOS_PADRAO
+                    st.write(f"Filtrando por {len(termos_busca)} termos (Apenas Padrão Medcal)...")
                 
                 # Busca PNCP
                 resultados_raw = client.buscar_oportunidades(dias, estados, termos_positivos=termos_busca)
                 
                 # Busca Fontes Extras
-                if use_conlicitacao:
-                    st.write("Buscando no ConLicitação...")
-                    session = get_session()
-                    login = session.query(Configuracao).filter_by(chave='conlicitacao_login').first()
-                    senha = session.query(Configuracao).filter_by(chave='conlicitacao_senha').first()
-                    session.close()
-                    
-                    scraper_con = ConLicitacaoScraper(login.valor if login else None, senha.valor if senha else None)
-                    res_con = scraper_con.buscar_oportunidades(termos_busca)
-                    resultados_raw.extend(res_con)
-                    
-                if use_pcp:
-                    st.write("Buscando no Portal de Compras Públicas...")
-                    session = get_session()
-                    login = session.query(Configuracao).filter_by(chave='pcp_login').first()
-                    senha = session.query(Configuracao).filter_by(chave='pcp_senha').first()
-                    session.close()
-                    
-                    scraper_pcp = PortalComprasPublicasScraper(login.valor if login else None, senha.valor if senha else None)
-                    res_pcp = scraper_pcp.buscar_oportunidades(termos_busca)
-                    resultados_raw.extend(res_pcp)
+
 
                 if use_femurn:
                     st.write("Baixando e analisando Diário Oficial do FEMURN (PDF)...")
                     scraper_femurn = FemurnScraper()
                     # Forçamos o filtro estrito (termos prioritários) para evitar "Aviso de Edital" genérico
-                    res_femurn = scraper_femurn.buscar_oportunidades(client.TERMOS_POSITIVOS_PRIORITARIOS, termos_negativos=client.TERMOS_NEGATIVOS_PADRAO)
+                    res_femurn = scraper_femurn.buscar_oportunidades(client.TERMOS_POSITIVOS_PADRAO, termos_negativos=client.TERMOS_NEGATIVOS_PADRAO)
                     resultados_raw.extend(res_femurn)
-                
+
+                if use_famup:
+                    st.write("Baixando e analisando Diário Oficial do FAMUP (PDF)...")
+                    scraper_famup = FamupScraper()
+                    res_famup = scraper_famup.buscar_oportunidades(client.TERMOS_POSITIVOS_PADRAO, termos_negativos=client.TERMOS_NEGATIVOS_PADRAO)
+                    resultados_raw.extend(res_famup)
+
+                if use_amupe:
+                    st.write("Baixando e analisando Diário Oficial do AMUPE (PDF)...")
+                    scraper_amupe = AmupeScraper()
+                    res_amupe = scraper_amupe.buscar_oportunidades(client.TERMOS_POSITIVOS_PADRAO, termos_negativos=client.TERMOS_NEGATIVOS_PADRAO)
+                    resultados_raw.extend(res_amupe)
+
+                # Scrapers de Alagoas
+                if use_ama:
+                    st.write("Baixando e analisando Diário Oficial do AMA (PDF)...")
+                    scraper_ama = AmaScraper()
+                    res_ama = scraper_ama.buscar_oportunidades(client.TERMOS_POSITIVOS_PADRAO, termos_negativos=client.TERMOS_NEGATIVOS_PADRAO)
+                    resultados_raw.extend(res_ama)
+
+                if use_maceio:
+                    st.write("Baixando e analisando Diário Oficial de Maceió (PDF)...")
+                    scraper_maceio = MaceioScraper()
+                    res_maceio = scraper_maceio.buscar_oportunidades(client.TERMOS_POSITIVOS_PADRAO, termos_negativos=client.TERMOS_NEGATIVOS_PADRAO)
+                    resultados_raw.extend(res_maceio)
+
+                if use_maceio_investe:
+                    st.write("Baixando e analisando Diário Oficial de Maceió Investe (PDF)...")
+                    scraper_maceio_investe = MaceioInvesteScraper()
+                    res_maceio_investe = scraper_maceio_investe.buscar_oportunidades(client.TERMOS_POSITIVOS_PADRAO, termos_negativos=client.TERMOS_NEGATIVOS_PADRAO)
+                    resultados_raw.extend(res_maceio_investe)
+
+                if use_maceio_saude:
+                    st.write("Baixando e analisando Diário Oficial de Maceió Saúde (PDF)...")
+                    scraper_maceio_saude = MaceioSaudeScraper()
+                    res_maceio_saude = scraper_maceio_saude.buscar_oportunidades(client.TERMOS_POSITIVOS_PADRAO, termos_negativos=client.TERMOS_NEGATIVOS_PADRAO)
+                    resultados_raw.extend(res_maceio_saude)
+
                 total_api = len(resultados_raw)
                 
                 # Filtro de Data de Início de Proposta (Pós-processamento)
@@ -194,30 +228,23 @@ elif page == "Buscar Licitações":
                 ignorados_data = 0
                 
                 for res in resultados_raw:
-                    # Lógica de Filtro Futuro (Sempre Ativa)
-                    inicio_str = res.get('data_inicio_proposta')
+                    # REGRA SIMPLES: Mostra APENAS se ainda dá tempo de enviar proposta
+                    # Critério: Data de FIM de proposta >= HOJE
+
+                    encerramento_str = res.get('data_encerramento_proposta')
                     should_exclude = False
-                    
-                    # 1. Tenta filtrar pela Data de Início de Proposta
-                    if inicio_str:
+
+                    if encerramento_str:
                         try:
-                            inicio_dt = datetime.fromisoformat(inicio_str).date()
-                            if inicio_dt < hoje_date:
+                            fim_dt = datetime.fromisoformat(encerramento_str).date()
+                            # Se data de fim JÁ PASSOU → EXCLUI
+                            if fim_dt < hoje_date:
                                 should_exclude = True
                         except:
-                            pass 
-                    
-                    # 2. Fallback: Se não tem data de início
-                    else:
-                        encerramento_str = res.get('data_encerramento_proposta')
-                        if encerramento_str:
-                            try:
-                                fim_dt = datetime.fromisoformat(encerramento_str).date()
-                                if fim_dt < hoje_date:
-                                    should_exclude = True
-                            except:
-                                pass
-                                
+                            # Se der erro ao parsear data, mantém (não exclui por segurança)
+                            pass
+                    # Se NÃO tem data de encerramento, mantém (melhor mostrar do que perder)
+
                     if should_exclude:
                         ignorados_data += 1
                         continue
@@ -578,73 +605,9 @@ elif page == "Configurações":
             
         st.divider()
         
-        # --- Seção 3: Credenciais Portais Externos ---
-        st.subheader("🔐 Credenciais de Portais Externos")
-        st.markdown("Configure o acesso para buscar no ConLicitação e Portal de Compras Públicas.")
-        
-        col_cred1, col_cred2 = st.columns(2)
-        
-        with col_cred1:
-            st.markdown("**ConLicitação**")
-            conf_cl_login = session.query(Configuracao).filter_by(chave='conlicitacao_login').first()
-            conf_cl_pass = session.query(Configuracao).filter_by(chave='conlicitacao_senha').first()
+
             
-            if not conf_cl_login:
-                conf_cl_login = Configuracao(chave='conlicitacao_login', valor='')
-                session.add(conf_cl_login)
-            if not conf_cl_pass:
-                conf_cl_pass = Configuracao(chave='conlicitacao_senha', valor='')
-                session.add(conf_cl_pass)
-                
-            new_cl_login = st.text_input("Login ConLicitação", value=conf_cl_login.valor)
-            new_cl_pass = st.text_input("Senha ConLicitação", value=conf_cl_pass.valor, type="password")
-            
-        with col_cred2:
-            st.markdown("**Portal de Compras Públicas**")
-            conf_pcp_login = session.query(Configuracao).filter_by(chave='pcp_login').first()
-            conf_pcp_pass = session.query(Configuracao).filter_by(chave='pcp_senha').first()
-            
-            if not conf_pcp_login:
-                conf_pcp_login = Configuracao(chave='pcp_login', valor='')
-                session.add(conf_pcp_login)
-            if not conf_pcp_pass:
-                conf_pcp_pass = Configuracao(chave='pcp_senha', valor='')
-                session.add(conf_pcp_pass)
-                
-            new_pcp_login = st.text_input("Login PCP", value=conf_pcp_login.valor)
-            new_pcp_pass = st.text_input("Senha PCP", value=conf_pcp_pass.valor, type="password")
-            
-        if st.button("Salvar Credenciais"):
-            conf_cl_login.valor = new_cl_login
-            conf_cl_pass.valor = new_cl_pass
-            conf_pcp_login.valor = new_pcp_login
-            conf_pcp_pass.valor = new_pcp_pass
-            session.commit()
-            st.success("Credenciais salvas!")
-            
-        st.markdown("### 🧪 Teste de Conexão")
-        if st.button("Testar Conexão com Portais"):
-            with st.status("Testando conexões...", expanded=True):
-                # Teste ConLicitação
-                st.write("Testando ConLicitação...")
-                st.warning("Teste do ConLicitação temporariamente desativado.")
-                # scraper_cl = ConLicitacaoScraper(new_cl_login, new_cl_pass)
-                # ok_cl, msg_cl = scraper_cl._fazer_login()
-                # if ok_cl:
-                #     st.success(f"ConLicitação: {msg_cl}")
-                # else:
-                #     st.error(f"ConLicitação: {msg_cl}")
-                    
-                # Teste PCP
-                st.write("Testando Portal de Compras Públicas...")
-                scraper_pcp = PortalComprasPublicasScraper(new_pcp_login, new_pcp_pass)
-                ok_pcp, msg_pcp = scraper_pcp._fazer_login()
-                if ok_pcp:
-                    st.success(f"Portal Compras Públicas: {msg_pcp}")
-                else:
-                    st.error(f"Portal Compras Públicas: {msg_pcp}")
-            
-        st.divider()
+
         
         # --- Seção 2: Importador CNAE ---
         st.subheader("🏭 Gerador de Keywords via CNAE")

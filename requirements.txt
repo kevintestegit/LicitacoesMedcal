@@ -7,3 +7,4 @@ openpyxl
 google-generativeai
 playwright
 googlesearch-python
+pypdf

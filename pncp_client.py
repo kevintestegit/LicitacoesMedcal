@@ -67,7 +67,7 @@ class PNCPClient:
         "MATERIAL DE HIGIENE PESSOAL", "MATERIAIS DE HIGIENE PESSOAL", "MATERIAL DE HIGIENE", "MATERIAIS DE HIGIENE", "mobiliários", "MOBILIÁRIOS", "MOBILIARIOS",
         "MATERIAL DE MOBILIÁRIO", "MATERIAL DE MOBILIARIO", "MATERIAIS DE MOBILIÁRIO", "MATERIAIS DE MOBILIARIO", "coletes balísticos", "COLETES BALÍSTICOS", "COLETES BALISTICOS",
         "material elétrico", "MATERIAL ELÉTRICO", "MATERIAL ELETRICO", "MATERIAIS ELÉTRICOS", "MATERIAIS ELETRICOS", "materiais pré-moldados",
-        "MATERIAIS PRÉ-MOLDADOS", "MATERIAIS PRE-MOLDADOS","MATERIAIS DESCARTÁVEIS", "MATERIAL DESCARTÁVEL", "MATERIAL DESCARTAVEL", "corrida de rua",
+        "MATERIAIS PRÉ-MOLDADOS", "MATERIAIS PRE-MOLDADOS", "corrida de rua",
         "CORRIDA DE RUA", "aquisição de combustíveis", "AQUISIÇÃO DE COMBUSTÍVEIS", "AQUISICAO DE COMBUSTIVEIS", "eventos de promoção",
         "EVENTOS DE PROMOÇÃO", "EVENTOS DE PROMOCAO", "locação de espaço físico", "LOCAÇÃO DE ESPAÇO FÍSICO", "LOCAÇÃO DE ESPACO FISICO", "LOCACAO DE ESPACO FISICO",
         "sacola ecológica", "SACOLA ECOLÓGICA", "SACOLA ECOLOGICA", "AQUISIÇÃO DE MÁQUINA DE CORTAR GRAMA", "MÁQUINA DE CORTAR GRAMA", "MAQUINA DE CORTAR GRAMA",
@@ -109,42 +109,77 @@ class PNCPClient:
         "PLATAFORMA DE VIDEOCONFERÊNCIA", "PLATAFORMA DE VIDEOCONFERENCIA", "manutenção da infraestrutura", "MANUTENÇÃO DA INFRAESTRUTURA",
         "MANUTENCAO DA INFRAESTRUTURA", "SERVIÇOS DE INFRAESTRUTURA", "SERVICOS DE INFRAESTRUTURA", "materiais e utensílios de copa e cozinha",
         "manutenção de antena de Alta Frequência", "MANUTENÇÃO DE ANTENA DE ALTA FREQUÊNCIA", "MANUTENCAO DE ANTENA DE ALTA FREQUENCIA",
-        "SERVIÇOS DE MANUTENÇÃO DE ANTENA DE ALTA FREQUÊNCIA", "SERVICOS DE MANUTENCAO DE ANTENA DE ALTA FREQUENCIA"
+        "SERVIÇOS DE MANUTENÇÃO DE ANTENA DE ALTA FREQUÊNCIA", "SERVICOS DE MANUTENCAO DE ANTENA DE ALTA FREQUENCIA",
+        "VIDEOMONITORAMENTO", "COZINHA", "LOUSA", "LOUSAS", "PERSIANA", "PERSIANAS",
+        "GENEROS ALIMENTICIOS", "GÊNEROS ALIMENTÍCIOS", "ALIMENTOS",
+        "TECNOLOGIA DA INFORMACAO", "TI", "SOFTWARE", "SOLUCAO DE TECNOLOGIA", "SOLUÇÃO DE TECNOLOGIA",
+        "SHOW", "ARTISTICA", "ARTÍSTICA", "EVENTO", "FESTA", "PALCO", "TENDA", "TENDAS", "LOCAÇÃO DE TENDA", "LOCAÇÃO DE TENDAS", "LOCACAO DE TENDA", "LOCACAO DE TENDAS",
+        "PAVIMENTAÇÃO", "PAVIMENTACAO", "OBRA", "CONSTRUÇÃO", "CONSTRUCAO", "REFORMA",
+        "LONA", "LONAS", "LONA PLASTICA", "LONA PLÁSTICA", "BISCOITO", "BISCOITOS", "BOLACHA", "BOLACHAS",
+        "PADARIA", "CONFEITARIA", "PANIFICAÇÃO", "PANIFICACAO", "PÃO", "PAO", "PÃES", "PAES",
+        "BOLO", "BOLOS", "DOCES", "DOCE", "SALGADOS", "SALGADO", "SANDUÍCHE", "SANDUICHE",
+        "CAFÉ DA MANHÃ", "CAFE DA MANHA", "LANCHE", "LANCHES", "REFEIÇÃO", "REFEICAO", "REFEIÇÕES", "REFEICOES",
+        "ALIMENTAÇÃO ESCOLAR", "ALIMENTACAO ESCOLAR", "MERENDA", "MERENDA ESCOLAR",
+        "BANDA", "BANDAS", "MÚSICO", "MUSICO", "MÚSICOS", "MUSICOS", "CANTOR", "CANTORES",
+        "DJ", "DISC JOCKEY", "SOM AUTOMOTIVO", "EQUIPAMENTO DE SOM", "EQUIPAMENTOS DE SOM",
+        "ARTISTA", "ARTISTAS", "APRESENTAÇÃO ARTÍSTICA", "APRESENTACAO ARTISTICA",
+        "BANDEIRA", "BANDEIRAS", "FAIXA DECORATIVA", "FAIXAS DECORATIVAS", "BANNER", "BANNERS",
+        "TERMO ADITIVO", "EXTRATO DE ADITIVO", "EXTRATO DE CONTRATO", "EXTRATO DO CONTRATO",
+        "PRORROGAÇÃO", "PRORROGACAO", "ADITIVO DE PRORROGAÇÃO", "ADITIVO DE PRORROGACAO",
+        "ADJUDICAÇÃO", "ADJUDICACAO", "HOMOLOGAÇÃO", "HOMOLOGACAO",
+        "ATA DE REGISTRO DE PREÇO", "ATA DE REGISTRO DE PRECOS",
+        "RESULTADO DE JULGAMENTO",
+
+        # Bloqueia PRESTAÇÃO DE SERVIÇOS (Medcal não presta serviços, FORNECE produtos)
+        "PRESTAÇÃO DE SERVIÇOS DE EXAMES", "PRESTACAO DE SERVICOS DE EXAMES",
+        "SERVIÇOS DE EXAMES", "SERVICOS DE EXAMES", "SERVIÇO DE EXAMES", "SERVICO DE EXAMES",
+        "REALIZAÇÃO DE EXAMES", "REALIZACAO DE EXAMES", "EXECUÇÃO DE EXAMES", "EXECUCAO DE EXAMES",
+        "EXAMES LABORATORIAIS E COMPLEMENTARES", "EXAMES DE LABORATORIO E COMPLEMENTARES",
+        "PRESTAÇÃO DE SERVIÇOS LABORATORIAIS", "PRESTACAO DE SERVICOS LABORATORIAIS",
+        "EMPRESA ESPECIALIZADA NA PRESTAÇÃO DE SERVIÇOS DE EXAMES",
+        "EMPRESA ESPECIALIZADA EM EXAMES", "EXECUÇÃO DE EXAMES LABORATORIAIS",
+
+        # Bloqueia CAPACITAÇÃO/TREINAMENTO (Medcal não presta treinamento como serviço)
+        "CAPACITAÇÃO PROFISSIONAL", "CAPACITACAO PROFISSIONAL", "CAPACITAÇÃO", "CAPACITACAO",
+        "TREINAMENTO PROFISSIONAL", "TREINAMENTO", "TREINAMENTOS",
+        "CURSO", "CURSOS", "FORMAÇÃO PROFISSIONAL", "FORMACAO PROFISSIONAL",
+        "QUALIFICAÇÃO PROFISSIONAL", "QUALIFICACAO PROFISSIONAL",
+        "SERVIÇOS DE CAPACITAÇÃO", "SERVICOS DE CAPACITACAO",
+        "PRESTAÇÃO DE SERVIÇO DE CAPACITAÇÃO", "PRESTACAO DE SERVICO DE CAPACITACAO",
+        "EMPRESA PARA PRESTAÇÃO DE SERVIÇO DE CAPACITAÇÃO",
+
+        # Bloqueia outros serviços assistenciais que não são fornecimento de produtos
+        "SERVIÇOS MÉDICOS", "SERVICOS MEDICOS", "PRESTAÇÃO DE SERVIÇOS MÉDICOS",
+        "SERVIÇOS DE SAÚDE", "SERVICOS DE SAUDE", "PRESTAÇÃO DE SERVIÇOS DE SAÚDE",
+        "ATENDIMENTO AMBULATORIAL", "CONSULTA MÉDICA", "CONSULTAS MEDICAS"
     ]
-    # Termos POSITIVOS padrão (do app.py original)
+    # Termos POSITIVOS padrão (Unificado)
     TERMOS_POSITIVOS_PADRAO = [
-        "Aquisição de aparelhos", "laboratoriais e hospitalares", 
-        "MATERIAL HOSPITALAR", "MATERIAIS HOSPITALARES",
-        "MATERIAL LABORATORIAL", "MATERIAIS LABORATORIAIS", "LABORATORIO DE ANALISES CLINICAS",
+        "EXAMES LABORATORIAS", "EXAMES","APARELHOS HOSPITALARES", "APARELHOS LABORATORIAIS", 
+        "MATERIAL HOSPITALAR", "MATERIAIS HOSPITALARES", "HEMOSTASIA", "IMUNO FLUORECÊNCIA", "IMUNOFLUORESCÊNCIA", 
+        "MATERIAL LABORATORIAL", "MATERIAIS LABORATORIAIS", "LABORATORIO DE ANALISES CLINICAS", "LABORATORIO",
         "MATERIAL DE LABORATORIO", "MATERIAIS DE LABORATORIO", "INSUMO", "INSUMOS", "REAGENTE", "AQUISIÇÃO DE MATERIAIS DE CONSUMO",
-        "REAGENTES", "PRODUTOS MEDICOS", "PRODUTOS MÉDICOS", "PRODUTOS HOSPITALARES", "HORMONIOS", "REAGENTES LABORATORIAIS",
+        "REAGENTES", "PRODUTOS HOSPITALARES", "HORMONIOS", "REAGENTES LABORATORIAIS",
         "PRODUTOS LABORATORIAIS", "EQUIPAMENTO HOSPITALAR", "EQUIPAMENTOS HOSPITALARES", "REAGENTES DE LABORATORIO",
-        "EQUIPAMENTO DE HEMATOLOGIA", "EQUIPAMENTO DE BIOQUIMICA", "EQUIPAMENTO DE COAGULACAO", 
+        "EQUIPAMENTO DE HEMATOLOGIA", "EQUIPAMENTO DE BIOQUIMICA", "EQUIPAMENTO DE COAGULACAO", "POCT",
         "EQUIPAMENTO DE IONOGRAMA", "AGUA DESTILADA", "CITOPALOGIA", "REAGENTES PARA LABORATORIO",
         "EQUIPAMENTO LABORATORIAL", "EQUIPAMENTOS LABORATORIAIS", "EQUIPAMENTOS DE LABORATORIO",
         "EQUIPAMENTO BIOMEDICO", "EQUIPAMENTOS BIOMEDICOS", "ANALISE CLINICA", "ANALISES CLINICAS",
-        "EQUIPAMENTO", "EQUIPAMENTOS",
-        "Anatomia Patológica", "Citopatologia","BIOQUIMICA", "HEMATOLOGIA", "IMUNOLOGIA", "TT/TTPA",
+        "ANATOMIA PATOLOGICA", "CITOPATOLOGIA","BIOQUIMICA", "HEMATOLOGIA", "IMUNOLOGIA", "TT/TTPA",
         "COAGULAÇÃO", "APARELHO DE COAGULAÇÃO", "IMUNO-HISTOQUÍMICA", "IMUNO", "HORMÔNIOS", "HORMONIO",
-        "APARELHOS HOSPITALARES", "APARELHOS MEDICOS", "APARELHOS MÉDICOS", "APARELHOS LABORATORIAIS", 
         "INSTRUMENTOS HOSPITALARES", "COAGULACAO", "INSTRUMENTOS LABORATORIAIS",
         "LABORATORIAL", "LABORATORIO", "LABORATÓRIO", "HOSPITALAR", "HOSPITALARES", "IONS", "ION", "ÍONS",
-        "GASOMETRIA", "TESTE RÁPIDO", "TESTE RAPIDO",
         "MANUTENCAO", "MANUTENÇÃO", "CALIBRACAO", "CALIBRAÇÃO", "AFERICAO", "AFERIÇÃO", "TIPAGEM SANGUINEA", "TIPAGEM SANGUÍNEA",
         "ALUGUEL", "LOCACAO", "LOCAÇÃO", "COMODATO", "COMODATOS", "URINA", "URANALISES", "HEMOCOMPONENTES", "URANALISE",
-        "PECA", "PEÇA", "PECAS", "PEÇAS", "ACESSORIO", "ACESSÓRIO",
         "SERVIÇOS CONTÍNUOS DE CALIBRAÇÃO","MANUTENÇÃO PREVENTIVA E CORRETIVA",
         "MANUTENÇÃO E REPARO NOS COMPONENTES DE EQUIPAMENTO",  "ASSISTENCIA HOSPITALAR", "ASSISTÊNCIA HOSPITALAR",
-        "ASSISTENCIA AMBULATORIAL", "ASSISTÊNCIA AMBULATORIAL", "MATERIAL AMBULATORIAL", "MATERIAIS AMBULATORIAIS"
-    ]
-
-    TERMOS_POSITIVOS_PRIORITARIOS = [
-        "REAGENTE", "REAGENTES", "REAGENTE LABORATORIAL", "REAGENTES LABORATORIAIS",
-        "EQUIPAMENTO BIOMEDICO", "EQUIPAMENTOS BIOMEDICOS", "EQUIPAMENTO BIOMÉDICO", "EQUIPAMENTOS BIOMÉDICOS",
-        "BIOMEDICO", "BIOMÉDICO",
-        "BIOQUIMICA", "BIOQUÍMICA", "BIOQUIMICO", "BIOQUÍMICO",
-        "ANALISE CLINICA", "ANALISES CLINICAS", "ANÁLISE CLÍNICA", "ANÁLISES CLÍNICAS",
-        "LABORATORIO DE ANALISES CLINICAS", "LABORATÓRIO DE ANÁLISES CLÍNICAS"
+        "ASSISTENCIA AMBULATORIAL", "ASSISTÊNCIA AMBULATORIAL", "MATERIAL AMBULATORIAL", "MATERIAIS AMBULATORIAIS",
+        "REAGENTE LABORATORIAL", "REAGENTES DE LABORATORIO", "EQUIPAMENTO BIOMÉDICO", "EQUIPAMENTOS BIOMÉDICOS", 
+        "EQUIPAMENTO HEMATOLOGIA", "EQUIPAMENTOS HEMATOLOGIA", "EQUIPAMENTOS BIOQUIMICA", "EQUIPAMENTO BIOQUIMICA", 
+        "EQUIPAMENTO IONOGRAMA", "EQUIPAMENTOS IONOGRAMA", "EQUIPAMENTOS COAGULACAO", "EQUIPAMENTO COAGULACAO",
+        "BIOMEDICO", "BIOMÉDICO", "BIOMEDICINA", "BIOQUIMICO", "BIOQUÍMICO", "IONOGRAMA", 
+        "ANÁLISE CLÍNICA", "ANÁLISES CLÍNICAS", "LABORATÓRIO DE ANÁLISES CLÍNICAS",
+        "TUBO", "TUBOS", "COLETA DE SANGUE", "COVID", "GASOMETRIA", "TESTE RÁPIDO", "TESTE RAPIDO"
     ]
 
     def __init__(self):
@@ -182,10 +217,22 @@ class PNCPClient:
         data_final = (hoje + timedelta(days=1)).strftime('%Y%m%d')
         
         resultados = []
-        
+
+        print(f"\n{'='*80}")
+        print(f"🔍 INICIANDO BUSCA NO PNCP")
+        print(f"Período: {data_inicial} a {data_final}")
+        print(f"Estados: {estados}")
+        print(f"{'='*80}\n")
+
+        total_api = 0
+
         # 6=Pregão, 8=Dispensa, 9=Inexigibilidade
         for modalidade in [6, 8, 9]:
+            modalidade_nome = {6: "Pregão", 8: "Dispensa", 9: "Inexigibilidade"}.get(modalidade)
+
             for uf in estados:
+                print(f"\n📍 Buscando {modalidade_nome} em {uf}...")
+
                 # Busca ampliada: páginas 1 a 5 de cada estado/modalidade
                 for pagina in range(1, 6):
                     params = {
@@ -195,15 +242,23 @@ class PNCPClient:
                         "uf": uf,
                         "pagina": str(pagina),
                         "tamanhoPagina": "50"
-                        # "modoDisputa": "1" # Removido para pegar compras diretas sem disputa aberta
                     }
-                    
+
                     try:
                         resp = requests.get(self.BASE_URL, params=params, headers=self.headers, timeout=10)
-                        if resp.status_code != 200: continue
-                        
+
+                        if resp.status_code != 200:
+                            print(f"  ⚠️ Erro HTTP {resp.status_code} - Página {pagina}")
+                            continue
+
                         data = resp.json().get('data', [])
-                        if not data: break
+                        total_api += len(data)
+
+                        if not data:
+                            print(f"  ℹ️ Página {pagina} vazia - Fim da busca para {uf}")
+                            break
+
+                        print(f"  ✅ Página {pagina}: {len(data)} licitações encontradas")
                         
                         for item in data:
 
@@ -216,33 +271,32 @@ class PNCPClient:
 
                             # 2) Filtro de Termos Positivos (se houver)
                             if termos_positivos_upper and not any(t in obj for t in termos_positivos_upper):
+                                print(f"❌ BLOQUEADO (Sem termos positivos): {obj[:100]}...")
                                 continue
 
                             # 3) Filtro de Termos Negativos
-                            # DEBUG TEMPORÁRIO
-                            if "LIMPEZA E DESINFECÇÃO" in obj:
-                                print(f"--- DEBUG FILTER ---")
-                                print(f"OBJ: {obj}")
-                                matches = [t for t in termos_negativos_upper if t in obj]
-                                print(f"MATCHES FOUND: {matches}")
-                                if matches:
-                                    print("ACTION: SKIPPING (Correct)")
-                                    continue
-                                else:
-                                    print("ACTION: INCLUDING (Why??)")
-                            
                             if any(t in obj for t in termos_negativos_upper):
+                                print(f"❌ BLOQUEADO (Termo negativo): {obj[:100]}...")
                                 continue
                             
                             # 4) Filtro de Data (Encerramento Proposta)
-                            # Só aceitamos se tiver data válida e futura (ou hoje)
+                            # REGRA: Bloqueia APENAS se tem data E já encerrou
+                            # Se NÃO tem data (Diários Municipais) → MANTÉM (melhor mostrar)
                             data_encerramento = item.get("dataEncerramentoProposta")
-                            dias_restantes = self.calcular_dias(data_encerramento)
-                            
-                            # Se não tem data de encerramento ou já passou muito (-1 ainda aceita como 'hoje' dependendo do fuso)
-                            # Vamos ser permissivos aqui e deixar o filtro fino para o UI, mas descartar coisas muito antigas
-                            if dias_restantes < -1: 
-                                continue
+                            dias_restantes = -999  # Valor padrão para itens sem data
+
+                            if data_encerramento:  # SÓ aplica filtro se TEM data
+                                dias_restantes = self.calcular_dias(data_encerramento)
+                                print(f"📅 Data fim: {data_encerramento} | Dias: {dias_restantes}")
+
+                                if dias_restantes < 0:
+                                    print(f"❌ BLOQUEADO (Prazo encerrado): {obj[:80]}...")
+                                    continue
+                            else:
+                                # Sem data = Diário Municipal (mantém)
+                                print(f"📅 SEM DATA (Diário) - MANTENDO: {obj[:80]}...")
+
+                            print(f"🎯 APROVADO! {obj[:100]}...")
 
                             # Adiciona dias restantes ao objeto parseado
                             parsed = self._parse_licitacao(item)
@@ -250,10 +304,16 @@ class PNCPClient:
                             resultados.append(parsed)
                             
                     except Exception as e:
-                        print(f"Erro na busca: {e}")
-                    
+                        print(f"  ❌ ERRO: {e}")
+
                     time.sleep(0.2)
-                    
+
+        print(f"\n{'='*80}")
+        print(f"📊 RESUMO DA BUSCA")
+        print(f"Total retornado pela API: {total_api}")
+        print(f"Total APROVADO (após filtros): {len(resultados)}")
+        print(f"{'='*80}\n")
+
         return resultados
 
     def _parse_licitacao(self, item):
