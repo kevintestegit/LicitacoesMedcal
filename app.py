@@ -144,8 +144,8 @@ TERMOS_NEGATIVOS = [
     "REMARCAÇÃO DE PASSAGENS",
 ]
 
-# 6 = Pregão Eletrônico, 8 = Dispensa de Licitação (ajuste se precisar)
-MODALIDADES = [6, 8]
+# 6 = Pregão Eletrônico, 8 = Dispensa de Licitação, 9 = Inexigibilidade
+MODALIDADES = [6, 8, 9]
 
 # Faixas em DIAS (contando a partir de hoje) sobre a data de encerramento das propostas
 FAIXAS = [

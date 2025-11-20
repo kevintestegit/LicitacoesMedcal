@@ -2,7 +2,9 @@ import streamlit as st
 import pandas as pd
 import pncp_client
 from pncp_client import PNCPClient
-from external_scrapers import ConLicitacaoScraper, PortalComprasPublicasScraper
+from external_scrapers import ConLicitacaoScraper, PortalComprasPublicasScraper, FemurnScraper
+from notifications import WhatsAppNotifier
+from ai_helper import get_google_price_estimate
 import importlib
 importlib.reload(pncp_client) # Força recarregamento para garantir atualização dos filtros
 from database import init_db, get_session, Produto, Licitacao, ItemLicitacao, Configuracao
@@ -16,7 +18,7 @@ st.set_page_config(page_title="Medcal Licitações", layout="wide", page_icon="�
 
 # --- SIDEBAR ---
 st.sidebar.title("🏥 Medcal Gestão")
-page = st.sidebar.radio("Navegação", ["Dashboard", "Buscar Licitações", "Meu Catálogo", "📥 Importar & Relatórios", "Configurações"])
+page = st.sidebar.radio("Navegação", ["Dashboard", "Buscar Licitações", "Gestão (Kanban)", "Meu Catálogo", "📥 Importar & Relatórios", "Configurações"])
 
 # --- FUNÇÕES AUXILIARES ---
 def salvar_produtos(df_editor):
@@ -121,6 +123,7 @@ elif page == "Buscar Licitações":
         use_conlicitacao = st.checkbox("ConLicitação (Desativado Temporariamente)", value=False, disabled=True, help="Desativado temporariamente para ajustes de conexão.")
     with col_ext2:
         use_pcp = st.checkbox("Portal de Compras Públicas", value=True)
+        use_femurn = st.checkbox("FEMURN (RN)", value=True, help="Link direto para o Diário Oficial dos Municípios do RN")
 
     # Filtro de futuro agora é MANDATÓRIO
     filtro_futuro = True 
@@ -175,6 +178,13 @@ elif page == "Buscar Licitações":
                     scraper_pcp = PortalComprasPublicasScraper(login.valor if login else None, senha.valor if senha else None)
                     res_pcp = scraper_pcp.buscar_oportunidades(termos_busca)
                     resultados_raw.extend(res_pcp)
+
+                if use_femurn:
+                    st.write("Baixando e analisando Diário Oficial do FEMURN (PDF)...")
+                    scraper_femurn = FemurnScraper()
+                    # Forçamos o filtro estrito (termos prioritários) para evitar "Aviso de Edital" genérico
+                    res_femurn = scraper_femurn.buscar_oportunidades(client.TERMOS_POSITIVOS_PRIORITARIOS, termos_negativos=client.TERMOS_NEGATIVOS_PADRAO)
+                    resultados_raw.extend(res_femurn)
                 
                 total_api = len(resultados_raw)
                 
@@ -302,6 +312,70 @@ elif page == "Buscar Licitações":
             st.success("Banco de dados limpo!")
             st.rerun()
 
+elif page == "Gestão (Kanban)":
+    st.header("📋 Gestão de Licitações (Kanban)")
+    
+    session = get_session()
+    
+    # Filtros
+    col_f1, col_f2 = st.columns(2)
+    with col_f1:
+        filtro_uf = st.multiselect("Filtrar por UF", ['RN', 'PB', 'PE', 'AL', 'CE', 'BA'])
+    with col_f2:
+        filtro_texto = st.text_input("Buscar no Objeto/Órgão")
+        
+    query = session.query(Licitacao).filter(Licitacao.status != 'Ignorada') # Não mostra ignoradas no Kanban principal
+    if filtro_uf:
+        query = query.filter(Licitacao.uf.in_(filtro_uf))
+    if filtro_texto:
+        query = query.filter(Licitacao.objeto.ilike(f"%{filtro_texto}%") | Licitacao.orgao.ilike(f"%{filtro_texto}%"))
+        
+    licitacoes = query.all()
+    
+    # Definição das colunas do Kanban
+    cols = st.columns(5)
+    status_list = ["Nova", "Em Análise", "Participar", "Ganha", "Perdida"]
+    status_colors = ["blue", "orange", "green", "gold", "red"]
+    
+    for i, status in enumerate(status_list):
+        with cols[i]:
+            st.markdown(f"### :{status_colors[i]}[{status}]")
+            items = [l for l in licitacoes if l.status == status]
+            st.write(f"Total: {len(items)}")
+            
+            for lic in items:
+                with st.container(border=True):
+                    st.markdown(f"**{lic.orgao}**")
+                    st.caption(f"{lic.uf} | {lic.modalidade}")
+                    if lic.data_sessao:
+                        st.caption(f"📅 {lic.data_sessao.strftime('%d/%m/%Y')}")
+                    
+                    # Matches
+                    matches = sum(1 for item in lic.itens if item.produto_match_id is not None)
+                    if matches > 0:
+                        st.markdown(f"🔥 **{matches} matches**")
+                    
+                    with st.expander("Detalhes"):
+                        st.write(lic.objeto)
+                        st.write(f"[Link]({lic.link})")
+                        
+                        # Comentários
+                        comentario = st.text_area("Notas", value=lic.comentarios or "", key=f"com_{lic.id}")
+                        if st.button("Salvar Nota", key=f"btn_com_{lic.id}"):
+                            lic.comentarios = comentario
+                            session.commit()
+                            st.success("Nota salva!")
+                            st.rerun()
+                            
+                        # Mover Status
+                        novo_status = st.selectbox("Mover para:", status_list + ["Ignorada"], index=status_list.index(status) if status in status_list else 0, key=f"st_{lic.id}")
+                        if novo_status != lic.status:
+                            lic.status = novo_status
+                            session.commit()
+                            st.rerun()
+
+    session.close()
+
 elif page == "Dashboard":
     st.header("Painel de Controle")
     
@@ -327,6 +401,9 @@ elif page == "Dashboard":
             if matches > 0:
                 icon = "🔥" # Fogo para alta prioridade
                 label_match = f":green[**{matches} itens do seu catálogo!**]"
+            elif lic.modalidade == "Diário Oficial" or lic.modalidade == "Portal Externo":
+                icon = "📢"
+                label_match = "Aviso de Edital (Verificar PDF/Link)"
             else:
                 icon = "⚠️"
                 label_match = f"{matches}/{total_itens} itens compatíveis"
@@ -415,10 +492,7 @@ elif page == "Dashboard":
                         with st.spinner(f"Pesquisando preço de mercado para: {item_desc[:30]}..."):
                             estimate = get_google_price_estimate(item_desc)
                             st.info(f"**Estimativa de Preço:** {estimate}")
-                            st.caption("Nota: Esta é uma estimativa baseada em IA e dados históricos. Sempre verifique fornecedores reais.")                            for arq in arquivos:
-                                st.markdown(f"- [{arq['titulo'] or arq['nome']}]({arq['url']})")
-                        else:
-                            st.warning("Nenhum arquivo encontrado no PNCP.")
+                            st.caption("Nota: Esta é uma estimativa baseada em IA e dados históricos. Sempre verifique fornecedores reais.")
                             
                     # Botão de IA
                     if st.button("✨ Gerar Resumo IA", key=f"btn_ai_{lic.id}"):
@@ -438,7 +512,7 @@ elif page == "Dashboard":
                             st.error("Configure a API Key do Gemini na aba Configurações primeiro!")
                             
                     # Botão de Estimativa de Preço (Novo)
-                    if st.button("💰 Estimar Preços de Mercado (IA)", key=f"btn_price_{lic.id}"):
+                    if st.button("💰 Estimar Preços de Mercado (IA)", key=f"btn_price_all_{lic.id}"):
                         from ai_helper import estimate_market_price, configure_genai, get_google_price_estimate
                         
                         session = get_session()
@@ -602,6 +676,51 @@ elif page == "Configurações":
                     st.warning("Todos os termos desse CNAE já estão na sua lista!")
             else:
                 st.error("CNAE não encontrado ou sem keywords mapeadas. Tente outro código.")
+
+        st.divider()
+        
+        # --- Seção 4: Notificações WhatsApp ---
+        st.subheader("🔔 Notificações WhatsApp (CallMeBot)")
+        st.markdown("""
+        Configure o envio de alertas via WhatsApp usando a API gratuita do CallMeBot.
+        
+        **Como configurar:**
+        1. Adicione o número **+34 644 56 55 18** aos seus contatos do WhatsApp.
+        2. Envie a mensagem: `I allow callmebot to send me messages`
+        3. Você receberá uma **API Key**. Insira abaixo.
+        """)
+        
+        conf_wpp_phone = session.query(Configuracao).filter_by(chave='whatsapp_phone').first()
+        conf_wpp_key = session.query(Configuracao).filter_by(chave='whatsapp_apikey').first()
+        
+        if not conf_wpp_phone:
+            conf_wpp_phone = Configuracao(chave='whatsapp_phone', valor='')
+            session.add(conf_wpp_phone)
+        if not conf_wpp_key:
+            conf_wpp_key = Configuracao(chave='whatsapp_apikey', valor='')
+            session.add(conf_wpp_key)
+            
+        col_wpp1, col_wpp2 = st.columns(2)
+        with col_wpp1:
+            new_wpp_phone = st.text_input("Seu Número (com DDI e DDD)", value=conf_wpp_phone.valor, placeholder="5584999999999")
+        with col_wpp2:
+            new_wpp_key = st.text_input("API Key (CallMeBot)", value=conf_wpp_key.valor, type="password")
+            
+        if st.button("Salvar WhatsApp"):
+            conf_wpp_phone.valor = new_wpp_phone
+            conf_wpp_key.valor = new_wpp_key
+            session.commit()
+            st.success("Configurações de WhatsApp salvas!")
+            
+        if st.button("📨 Testar Envio de Mensagem"):
+            if not new_wpp_phone or not new_wpp_key:
+                st.error("Preencha o número e a API Key antes de testar.")
+            else:
+                notifier = WhatsAppNotifier(new_wpp_phone, new_wpp_key)
+                if notifier.enviar_mensagem("✅ Teste do Sistema de Licitações Medcal! O sistema de notificações está funcionando."):
+                    st.success("Mensagem enviada com sucesso! Verifique seu WhatsApp.")
+                else:
+                    st.error("Falha ao enviar mensagem. Verifique o número e a API Key.")
     
     session.close()
             

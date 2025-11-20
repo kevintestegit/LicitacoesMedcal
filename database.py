@@ -35,6 +35,11 @@ class Licitacao(Base):
     objeto = Column(String)
     link = Column(String)
     
+    # Novos campos para Gestão (Kanban)
+    status = Column(String, default='Nova') # Nova, Em Análise, Participar, Ganha, Perdida, Ignorada
+    comentarios = Column(String)
+    data_captura = Column(DateTime, default=datetime.now)
+
     itens = relationship("ItemLicitacao", back_populates="licitacao", cascade="all, delete-orphan")
 
 class ItemLicitacao(Base):

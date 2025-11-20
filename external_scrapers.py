@@ -2,6 +2,10 @@ import requests
 from bs4 import BeautifulSoup
 import pandas as pd
 from datetime import datetime
+import io
+from pypdf import PdfReader
+import re
+from pncp_client import PNCPClient
 
 class ExternalScraper:
     """Classe base para scrapers de portais externos"""
@@ -622,3 +626,179 @@ class PortalComprasPublicasScraper(ExternalScraper):
                 "itens": [],
                 "origem": "Portal Compras Públicas"
             }]
+
+class FemurnScraper(ExternalScraper):
+    BASE_URL = "https://www.diariomunicipal.com.br/femurn/"
+    
+    def buscar_oportunidades(self, termos_busca=None, termos_negativos=None):
+        """
+        Baixa o PDF do dia e busca por termos chave.
+        """
+        resultados = []
+        try:
+            headers = {
+                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36"
+            }
+            
+            # 1. Fetch Homepage
+            response = requests.get(self.BASE_URL, headers=headers, timeout=15)
+            response.raise_for_status()
+            soup = BeautifulSoup(response.text, 'html.parser')
+            
+            # 2. Find PDF Link
+            pdf_url = None
+            link_tag = soup.find('a', id='downloadPdf')
+            if link_tag:
+                pdf_url = link_tag.get('href')
+            else:
+                input_tag = soup.find('input', id='urlPdf')
+                if input_tag:
+                    pdf_url = input_tag.get('value')
+            
+            if not pdf_url:
+                return [{
+                    "pncp_id": "FEMURN-ERROR",
+                    "orgao": "FEMURN",
+                    "uf": "RN",
+                    "modalidade": "Erro",
+                    "data_sessao": datetime.now().isoformat(),
+                    "data_publicacao": datetime.now().isoformat(),
+                    "objeto": "Não foi possível encontrar o link do PDF do dia.",
+                    "link": self.BASE_URL,
+                    "itens": [],
+                    "origem": "FEMURN"
+                }]
+
+            # 3. Download PDF
+            # Use stream=True to avoid loading huge files into memory at once, though here we read it all anyway.
+            pdf_response = requests.get(pdf_url, headers=headers, timeout=60)
+            pdf_response.raise_for_status()
+            
+            # 4. Read PDF
+            f = io.BytesIO(pdf_response.content)
+            reader = PdfReader(f)
+            text = ""
+            for page in reader.pages:
+                text += page.extract_text() + "\n"
+            
+            text_upper = text.upper()
+            
+            # 5. Search Terms & Extract Notices
+            # Define terms to search
+            if termos_busca is None:
+                termos_busca = PNCPClient.TERMOS_POSITIVOS_PRIORITARIOS
+            terms_to_search_upper = [t.strip().upper() for t in termos_busca if t and t.strip()]
+            
+            # Define negative terms
+            terms_negativos_upper = []
+            if termos_negativos:
+                terms_negativos_upper = [t.strip().upper() for t in termos_negativos]
+
+            # Compile Regex Patterns for Safer Matching (Word Boundaries)
+            # This prevents "ION" from matching "ADICIONAL" or "OBRA" from matching "COBRAR"
+            positive_pattern = None
+            if terms_to_search_upper:
+                # Sort by length desc to ensure longest match is tried (good practice)
+                terms_to_search_upper.sort(key=len, reverse=True)
+                positive_pattern = re.compile(r'\b(?:' + '|'.join(map(re.escape, terms_to_search_upper)) + r')\b')
+
+            negative_pattern = None
+            if terms_negativos_upper:
+                terms_negativos_upper.sort(key=len, reverse=True)
+                negative_pattern = re.compile(r'\b(?:' + '|'.join(map(re.escape, terms_negativos_upper)) + r')\b')
+
+            # Split text into "notices" using "Código Identificador:" as delimiter
+            chunks = re.split(r'(Código Identificador:\s*[\w\d]+)', text)
+            
+            # If the split didn't work (no codes found), treat whole text as one block
+            if len(chunks) < 2:
+                # Use Regex Search
+                if positive_pattern and positive_pattern.search(text_upper):
+                     # Check negative terms
+                     if not (negative_pattern and negative_pattern.search(text_upper)):
+                        resultados.append({
+                            "pncp_id": f"FEMURN-{datetime.now().strftime('%Y%m%d')}-FULL",
+                            "orgao": "Municípios do RN (FEMURN)",
+                            "uf": "RN",
+                            "modalidade": "Diário Oficial",
+                            "data_sessao": datetime.now().isoformat(),
+                            "data_publicacao": datetime.now().isoformat(),
+                            "objeto": text[:5000] + "... (Texto muito longo, verifique o PDF)",
+                            "link": pdf_url,
+                            "itens": [],
+                            "origem": "FEMURN"
+                        })
+            else:
+                # Reconstruct notices
+                # We iterate by 2 steps: i is the body, i+1 is the code
+                for i in range(0, len(chunks)-1, 2):
+                    body = chunks[i]
+                    code = chunks[i+1]
+                    full_notice = body + "\n" + code
+                    full_notice_clean = re.sub(r'\n+', '\n', full_notice).strip()
+                    full_notice_upper = full_notice_clean.upper()
+                    
+                    # Check if ANY positive term is present in this specific notice (Regex)
+                    if positive_pattern and positive_pattern.search(full_notice_upper):
+                        
+                        # Check negative terms (Regex)
+                        if negative_pattern and negative_pattern.search(full_notice_upper):
+                            continue
+
+                        # Extract Code ID for uniqueness
+                        code_match = re.search(r'Código Identificador:\s*([\w\d]+)', code)
+                        code_id = code_match.group(1) if code_match else f"UNK-{i}"
+                        
+                        # Extract Orgao (Heuristic)
+                        orgao_match = re.search(r'PREFEITURA MUNICIPAL (?:DE|DA|DO) ([^\n]+)', full_notice_clean, re.IGNORECASE)
+                        orgao_name = f"PM {orgao_match.group(1).strip()}" if orgao_match else "Município RN (FEMURN)"
+                        
+                        # Extract Modalidade (Heuristic)
+                        modalidade = "Diário Oficial"
+                        if "DISPENSA" in full_notice_upper:
+                            modalidade = "Dispensa (FEMURN)"
+                        elif "PREGÃO" in full_notice_upper:
+                            modalidade = "Pregão (FEMURN)"
+
+                        resultados.append({
+                            "pncp_id": f"FEMURN-{datetime.now().strftime('%Y%m%d')}-{code_id}",
+                            "orgao": orgao_name,
+                            "uf": "RN",
+                            "modalidade": modalidade,
+                            "data_sessao": datetime.now().isoformat(),
+                            "data_publicacao": datetime.now().isoformat(),
+                            "objeto": full_notice_clean, # Full text of the notice
+                            "link": pdf_url,
+                            "itens": [], # No structured items, but dashboard will show "Aviso de Edital"
+                            "origem": "FEMURN"
+                        })
+            
+            if not resultados:
+                 resultados.append({
+                    "pncp_id": f"FEMURN-{datetime.now().strftime('%Y%m%d')}-EMPTY",
+                    "orgao": "Municípios do RN (FEMURN)",
+                    "uf": "RN",
+                    "modalidade": "Diário Oficial",
+                    "data_sessao": datetime.now().isoformat(),
+                    "data_publicacao": datetime.now().isoformat(),
+                    "objeto": "Nenhum termo de interesse encontrado no Diário Oficial de hoje.",
+                    "link": pdf_url,
+                    "itens": [],
+                    "origem": "FEMURN"
+                })
+
+        except Exception as e:
+            resultados.append({
+                "pncp_id": "FEMURN-ERROR",
+                "orgao": "FEMURN",
+                "uf": "RN",
+                "modalidade": "Erro",
+                "data_sessao": datetime.now().isoformat(),
+                "data_publicacao": datetime.now().isoformat(),
+                "objeto": f"Erro ao processar PDF do FEMURN: {str(e)}",
+                "link": self.BASE_URL,
+                "itens": [],
+                "origem": "FEMURN"
+            })
+            
+        return resultados

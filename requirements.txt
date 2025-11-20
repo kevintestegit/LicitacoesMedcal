@@ -6,3 +6,4 @@ beautifulsoup4
 openpyxl
 google-generativeai
 playwright
+googlesearch-python
