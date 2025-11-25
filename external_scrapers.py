@@ -96,7 +96,7 @@ class DiarioMunicipalScraper(ExternalScraper):
             
             # 5. Search Terms & Extract Notices
             if termos_busca is None:
-                termos_busca = PNCPClient.TERMOS_POSITIVOS_PADRAO
+                termos_busca = PNCPClient.TERMOS_PRIORITARIOS
             
             terms_to_search_norm = [normalize_text(t) for t in termos_busca if t and t.strip()]
             

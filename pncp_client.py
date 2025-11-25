@@ -5,6 +5,7 @@ import re
 
 class PNCPClient:
     BASE_URL = "https://pncp.gov.br/api/consulta/v1/contratacoes/publicacao"
+    MAX_PAGINAS = 60  # limite alto para não perder editais em estados com muito volume
     
     # Termos NEGATIVOS padrão (podem ser sobrescritos ou extendidos)
     TERMOS_NEGATIVOS_PADRAO = [
@@ -177,9 +178,25 @@ class PNCPClient:
         "REAGENTE LABORATORIAL", "REAGENTES DE LABORATORIO", "EQUIPAMENTO BIOMÉDICO", "EQUIPAMENTOS BIOMÉDICOS", 
         "EQUIPAMENTO HEMATOLOGIA", "EQUIPAMENTOS HEMATOLOGIA", "EQUIPAMENTOS BIOQUIMICA", "EQUIPAMENTO BIOQUIMICA", 
         "EQUIPAMENTO IONOGRAMA", "EQUIPAMENTOS IONOGRAMA", "EQUIPAMENTOS COAGULACAO", "EQUIPAMENTO COAGULACAO",
-        "BIOMEDICO", "BIOMÉDICO", "BIOMEDICINA", "BIOQUIMICO", "BIOQUÍMICO", "IONOGRAMA", 
+        "BIOMEDICO", "BIOMÉDICO", "BIOMEDICINA", "BIOQUIMICO", "BIOQUÍMICO", "IONOGRAMA", "EQUIPAMENTO AUTOMATIZADO",
+        "EQUIPAMENTOS AUTOMATIZADOS",
         "ANÁLISE CLÍNICA", "ANÁLISES CLÍNICAS", "LABORATÓRIO DE ANÁLISES CLÍNICAS",
         "TUBO", "TUBOS", "COLETA DE SANGUE", "COVID", "GASOMETRIA", "TESTE RÁPIDO", "TESTE RAPIDO"
+    ]
+
+    # Subconjunto prioritário para reduzir falsos positivos (usado como filtro inicial)
+    TERMOS_PRIORITARIOS = [
+        "LOCAÇÃO DE EQUIPAMENTOS", "LOCAÇÃO DE EQUIPAMENTO", "ALUGUEL DE EQUIPAMENTOS", "COMODATO",
+        "EQUIPAMENTO DE HEMATOLOGIA", "EQUIPAMENTO DE BIOQUIMICA", "EQUIPAMENTO DE COAGULACAO",
+        "EQUIPAMENTO DE IMUNOLOGIA", "EQUIPAMENTO DE IONOGRAMA", "ANÁLISE CLÍNICA", "ANÁLISES CLÍNICAS",
+        "REAGENTES", "REAGENTE", "INSUMOS LABORATORIAIS", "INSUMO LABORATORIAL",
+        "GASOMETRIA", "POCT", "COAGULAÇÃO", "HEMATOLOGIA", "BIOQUIMICA", "IMUNOLOGIA", "IONOGRAMA", "HORMÔNIOS", "HORMONIOS",
+        "TUBOS", "TUBO", "LUVA", "LUVAS", "MÁSCARA", "MASCARA", "COLETA DE SANGUE", "EQUIPAMENTO AUTOMATIZADO", "EQUIPAMENTOS AUTOMATIZADOS"
+    ]
+    # Bloqueios adicionais para eventos/inscrições genéricas
+    TERMOS_EVENTOS_NEGATIVOS = [
+        "INSCRICAO", "INSCRIÇÃO", "CONFERENCIA", "CONFERÊNCIA", "CONGRESSO",
+        "SEMINARIO", "SEMINÁRIO", "WORKSHOP", "PALESTRA"
     ]
 
     def __init__(self):
@@ -199,22 +216,30 @@ class PNCPClient:
         except Exception:
             return -999
 
-    def buscar_oportunidades(self, dias_busca=30, estados=['RN', 'PB', 'PE', 'AL'], termos_positivos=[], termos_negativos=None):
+    def buscar_oportunidades(self, dias_busca=30, estados=['RN', 'PB', 'PE', 'AL'], termos_positivos=[], termos_negativos=None, apenas_abertas=True):
         """
         Busca licitações (Pregão/Dispensa) publicadas nos últimos X dias.
         Aplica filtros de termos positivos (OR) e negativos (NOT).
+        Se apenas_abertas=True, exige dataEncerramentoProposta >= hoje.
         """
         if termos_negativos is None:
-            termos_negativos = self.TERMOS_NEGATIVOS_PADRAO
+            termos_negativos = self.TERMOS_NEGATIVOS_PADRAO + self.TERMOS_EVENTOS_NEGATIVOS
 
         termos_negativos_upper = list(dict.fromkeys(t.upper() for t in termos_negativos))
         termos_positivos_upper = list(dict.fromkeys(t.upper() for t in termos_positivos)) if termos_positivos else []
+        termos_prioritarios_upper = [t.upper() for t in self.TERMOS_PRIORITARIOS]
 
         hoje = datetime.now()
-        hoje = datetime.now()
-        data_inicial = (hoje - timedelta(days=dias_busca)).strftime('%Y%m%d')
-        # Data final = Amanhã, para garantir que pegue tudo de hoje independente do fuso/hora
-        data_final = (hoje + timedelta(days=1)).strftime('%Y%m%d')
+        data_inicial_dt = hoje - timedelta(days=dias_busca)
+        data_final_dt = hoje
+        data_final_enc_dt = hoje + timedelta(days=60)  # janela padrão para enc. propostas futuras
+
+        # Formatos aceitos pela API variam; tentaremos AAAAMMDD e AAAA-MM-DD
+        data_inicial = data_inicial_dt.strftime('%Y%m%d')
+        data_final = data_final_dt.strftime('%Y%m%d')
+        data_inicial_iso = data_inicial_dt.strftime('%Y-%m-%d')
+        data_final_iso = data_final_dt.strftime('%Y-%m-%d')
+        data_final_enc = data_final_enc_dt.strftime('%Y%m%d')
         
         resultados = []
 
@@ -222,6 +247,7 @@ class PNCPClient:
         print(f"🔍 INICIANDO BUSCA NO PNCP")
         print(f"Período: {data_inicial} a {data_final}")
         print(f"Estados: {estados}")
+        print(f"Filtro apenas abertas: {apenas_abertas}")
         print(f"{'='*80}\n")
 
         total_api = 0
@@ -233,29 +259,46 @@ class PNCPClient:
             for uf in estados:
                 print(f"\n📍 Buscando {modalidade_nome} em {uf}...")
 
-                # Busca ampliada: páginas 1 a 5 de cada estado/modalidade
-                for pagina in range(1, 6):
+                # Busca paginada com limite
+                tamanho_pagina = 50  # API retorna erro 400 acima de 50
+                for pagina in range(1, self.MAX_PAGINAS + 1):
                     params = {
                         "dataInicial": data_inicial,
                         "dataFinal": data_final,
                         "codigoModalidadeContratacao": modalidade,
                         "uf": uf,
                         "pagina": str(pagina),
-                        "tamanhoPagina": "50"
+                        "tamanhoPagina": str(tamanho_pagina)
                     }
+                    if apenas_abertas:
+                        # Alguns clusters aceitam filtro direto por encerramento de proposta
+                        params["dataInicialEncerramentoProposta"] = hoje.strftime("%Y%m%d")
+                        params["dataFinalEncerramentoProposta"] = data_final_enc
 
                     try:
                         resp = requests.get(self.BASE_URL, params=params, headers=self.headers, timeout=10)
 
+                        # Fallback: alguns clusters do PNCP exigem data no formato AAAA-MM-DD
+                        if resp.status_code == 400:
+                            params_iso = params.copy()
+                            params_iso["dataInicial"] = data_inicial_iso
+                            params_iso["dataFinal"] = data_final_iso
+                            resp = requests.get(self.BASE_URL, params=params_iso, headers=self.headers, timeout=10)
+
                         if resp.status_code != 200:
-                            print(f"  ⚠️ Erro HTTP {resp.status_code} - Página {pagina}")
-                            continue
+                            body = ""
+                            try:
+                                body = resp.text[:200]
+                            except Exception:
+                                body = "<sem corpo>"
+                            print(f"  ⚠️ Erro HTTP {resp.status_code} - Página {pagina} | {body}")
+                            break
 
                         data = resp.json().get('data', [])
                         total_api += len(data)
 
                         if not data:
-                            print(f"  ℹ️ Página {pagina} vazia - Fim da busca para {uf}")
+                            print(f"  ℹ️ Página {pagina} vazia - fim da busca para {uf}")
                             break
 
                         print(f"  ✅ Página {pagina}: {len(data)} licitações encontradas")
@@ -269,34 +312,27 @@ class PNCPClient:
                             if not obj:
                                 continue
 
-                            # 2) Filtro de Termos Positivos (se houver)
-                            if termos_positivos_upper and not any(t in obj for t in termos_positivos_upper):
-                                print(f"❌ BLOQUEADO (Sem termos positivos): {obj[:100]}...")
+                            # 2) Filtro de Termos Prioritários (reduz ruído) ou Positivos
+                            tem_prio = any(t in obj for t in termos_prioritarios_upper)
+                            tem_pos = any(t in obj for t in termos_positivos_upper) if termos_positivos_upper else False
+                            if not tem_prio and not tem_pos:
                                 continue
 
                             # 3) Filtro de Termos Negativos
                             if any(t in obj for t in termos_negativos_upper):
-                                print(f"❌ BLOQUEADO (Termo negativo): {obj[:100]}...")
                                 continue
                             
                             # 4) Filtro de Data (Encerramento Proposta)
-                            # REGRA: Bloqueia APENAS se tem data E já encerrou
-                            # Se NÃO tem data (Diários Municipais) → MANTÉM (melhor mostrar)
+                            # Bloqueia se tem data e já encerrou.
                             data_encerramento = item.get("dataEncerramentoProposta")
+                            if not data_encerramento:
+                                continue  # Sem data = descarta (não dá para participar)
                             dias_restantes = -999  # Valor padrão para itens sem data
 
-                            if data_encerramento:  # SÓ aplica filtro se TEM data
+                            if data_encerramento:
                                 dias_restantes = self.calcular_dias(data_encerramento)
-                                print(f"📅 Data fim: {data_encerramento} | Dias: {dias_restantes}")
-
                                 if dias_restantes < 0:
-                                    print(f"❌ BLOQUEADO (Prazo encerrado): {obj[:80]}...")
-                                    continue
-                            else:
-                                # Sem data = Diário Municipal (mantém)
-                                print(f"📅 SEM DATA (Diário) - MANTENDO: {obj[:80]}...")
-
-                            print(f"🎯 APROVADO! {obj[:100]}...")
+                                    continue  # fora do prazo
 
                             # Adiciona dias restantes ao objeto parseado
                             parsed = self._parse_licitacao(item)
@@ -305,8 +341,13 @@ class PNCPClient:
                             
                     except Exception as e:
                         print(f"  ❌ ERRO: {e}")
+                        break
 
-                    time.sleep(0.2)
+                    # Se veio menos que o tamanho da página, acabou a lista
+                    if len(data) < tamanho_pagina:
+                        break
+
+                    time.sleep(0.05)
 
         print(f"\n{'='*80}")
         print(f"📊 RESUMO DA BUSCA")
@@ -410,3 +451,24 @@ class PNCPClient:
             licitacao_dict[cache_key] = itens_encontrados
         
         return itens_encontrados
+
+    def buscar_por_id(self, cnpj: str, ano: str, seq: str):
+        """
+        Busca uma licitação específica por CNPJ/ano/seq direto no endpoint de compra.
+        Retorna o dict parseado ou None.
+        """
+        if not (cnpj and ano and seq):
+            return None
+        url = f"https://pncp.gov.br/api/pncp/v1/orgaos/{cnpj}/compras/{ano}/{seq}"
+        try:
+            resp = requests.get(url, headers=self.headers, timeout=10)
+            if resp.status_code != 200:
+                print(f"Erro buscar_por_id: {resp.status_code} {resp.text[:200]}")
+                return None
+            data = resp.json()
+            parsed = self._parse_licitacao(data)
+            parsed['dias_restantes'] = self.calcular_dias(data.get("dataEncerramentoProposta"))
+            return parsed
+        except Exception as e:
+            print(f"Erro buscar_por_id: {e}")
+            return None

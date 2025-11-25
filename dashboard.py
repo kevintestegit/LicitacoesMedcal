@@ -1,20 +1,50 @@
 import streamlit as st
 import pandas as pd
-import pncp_client
 from pncp_client import PNCPClient
 from external_scrapers import FemurnScraper, FamupScraper, AmupeScraper, AmaScraper, MaceioScraper, MaceioInvesteScraper, MaceioSaudeScraper
 from notifications import WhatsAppNotifier
-from ai_helper import get_google_price_estimate
-import importlib
-importlib.reload(pncp_client) # Força recarregamento para garantir atualização dos filtros
+from ai_helper import get_google_price_estimate, estimate_market_price, configure_genai, summarize_bidding
 from database import init_db, get_session, Produto, Licitacao, ItemLicitacao, Configuracao
 from sqlalchemy import func
 from datetime import datetime
+from rapidfuzz import fuzz
+import unicodedata
 
 # Inicializa Banco
 init_db()
 
 st.set_page_config(page_title="Medcal Licitações", layout="wide", page_icon="🏥")
+
+# --- UTILITÁRIOS DE TEXTO ---
+def normalize_text(texto: str) -> str:
+    if not texto:
+        return ""
+    return unicodedata.normalize('NFKD', texto).encode('ASCII', 'ignore').decode('ASCII').upper()
+
+def safe_parse_date(date_str):
+    """Converte string ISO para datetime de forma segura. Retorna None se inválido."""
+    if not date_str or not isinstance(date_str, str) or date_str.strip() == "":
+        return None
+    try:
+        return datetime.fromisoformat(date_str)
+    except (ValueError, TypeError):
+        return None
+
+def best_match_against_keywords(texto: str, keywords):
+    """Retorna (melhor_score, melhor_keyword) usando fuzzy parcial."""
+    if not texto or not keywords:
+        return 0, ""
+    texto_norm = normalize_text(texto)
+    best_score = 0
+    best_kw = ""
+    for kw in keywords:
+        if not kw:
+            continue
+        score = fuzz.partial_ratio(normalize_text(kw), texto_norm)
+        if score > best_score:
+            best_score = score
+            best_kw = kw
+    return best_score, best_kw
 
 # --- SIDEBAR ---
 st.sidebar.title("🏥 Medcal Gestão")
@@ -42,26 +72,32 @@ def salvar_produtos(df_editor):
     session.close()
     st.success("Catálogo atualizado!")
 
-def match_itens(session, licitacao_id):
-    """Tenta cruzar itens da licitação com produtos do catálogo"""
+def match_itens(session, licitacao_id, limiar=80):
+    """Tenta cruzar itens da licitação com produtos do catálogo com fuzzy matching"""
     licitacao = session.query(Licitacao).filter_by(id=licitacao_id).first()
     produtos = session.query(Produto).all()
     
     count = 0
     for item in licitacao.itens:
-        item_desc = item.descricao.upper()
+        item_desc = item.descricao or ""
         melhor_match = None
+        melhor_score = 0
         
         for prod in produtos:
-            keywords = [k.strip().upper() for k in prod.palavras_chave.split(',')]
-            # Se QUALQUER keyword estiver na descrição do item
-            if any(k in item_desc for k in keywords):
+            keywords = [k.strip() for k in prod.palavras_chave.split(',') if k.strip() and len(k.strip()) > 3]
+            keywords.append(prod.nome)
+            score, _ = best_match_against_keywords(item_desc, keywords)
+            if score > melhor_score:
                 melhor_match = prod
-                break # Pega o primeiro match por enquanto
+                melhor_score = score
         
-        if melhor_match:
+        if melhor_match and melhor_score >= limiar:
             item.produto_match_id = melhor_match.id
+            item.match_score = melhor_score
             count += 1
+        else:
+            item.produto_match_id = None
+            item.match_score = melhor_score
             
     session.commit()
     return count
@@ -99,7 +135,7 @@ if page == "Meu Catálogo":
         
     df = pd.DataFrame(data)
     
-    edited_df = st.data_editor(df, num_rows="dynamic", use_container_width=True)
+    edited_df = st.data_editor(df, num_rows="dynamic", width="stretch")
     
     if st.button("💾 Salvar Alterações"):
         salvar_produtos(edited_df)
@@ -114,8 +150,6 @@ elif page == "Buscar Licitações":
         
     busca_ampla = st.checkbox("🌍 Modo Varredura Total (Ignorar filtros de palavras-chave)",
                               help="Se marcado, traz TUDO o que foi publicado, sem filtrar por termos médicos. Útil para garantir que nada passou batido.")
-
-    st.info("🎯 **Regra de Ouro:** Sistema mostra APENAS licitações com prazo de proposta ABERTO (data de encerramento >= hoje)")
 
     st.markdown("#### Fontes Extras - Diários Oficiais Municipais")
     col_ext1, col_ext2, col_ext3 = st.columns(3)
@@ -243,7 +277,9 @@ elif page == "Buscar Licitações":
                         except:
                             # Se der erro ao parsear data, mantém (não exclui por segurança)
                             pass
-                    # Se NÃO tem data de encerramento, mantém (melhor mostrar do que perder)
+                    else:
+                        # Se NÃO tem data de encerramento, exclui (não dá para participar)
+                        should_exclude = True
 
                     if should_exclude:
                         ignorados_data += 1
@@ -252,24 +288,36 @@ elif page == "Buscar Licitações":
                     # --- Lógica de Priorização (Match Score) ---
                     score = 0
                     matched_tags = []
-                    obj_lower = res['objeto'].lower()
-                    
-                    # Verifica match com produtos do catálogo
-                    # Usamos 'prods' que já foi carregado lá em cima
+                    obj_text = res['objeto']
+                    obj_norm = normalize_text(obj_text)
+
+                    # Verifica match com produtos do catálogo usando fuzzy
                     for p in prods:
-                        p_keywords = [k.strip().lower() for k in p.palavras_chave.split(',')]
-                        # Se qualquer keyword do produto estiver no objeto, conta ponto
-                        if any(k in obj_lower for k in p_keywords if len(k) > 3): # Ignora keywords muito curtas para evitar falso positivo
-                            score += 10 # Peso alto para match de catálogo
+                        p_keywords = [k.strip() for k in p.palavras_chave.split(',') if k.strip()]
+                        p_keywords.append(p.nome)
+                        match_score, kw = best_match_against_keywords(obj_text, p_keywords)
+                        if match_score >= 75:
+                            bonus = 15 if match_score >= 85 else 10
+                            score += bonus
                             matched_tags.append(p.nome)
-                            break # Conta apenas uma vez por produto para não inflar score com sinônimos
-                    
-                    # Verifica termos positivos padrão (peso menor)
+
+                    # Termos positivos padrão (peso menor, usa texto normalizado)
                     for t in client.TERMOS_POSITIVOS_PADRAO:
-                        if t.lower() in obj_lower:
-                            score += 1
-                            
-                    res['match_score'] = score
+                        if normalize_text(t) in obj_norm:
+                            score += 0.5
+
+                    # Peso por urgência de prazo
+                    dias_restantes = res.get('dias_restantes')
+                    if dias_restantes in (None, -999) and res.get('data_encerramento_proposta'):
+                        dias_restantes = client.calcular_dias(res.get('data_encerramento_proposta'))
+                    res['dias_restantes'] = dias_restantes
+                    if dias_restantes is not None and dias_restantes >= 0:
+                        if dias_restantes <= 7:
+                            score += 5
+                        elif dias_restantes <= 14:
+                            score += 3
+                    
+                    res['match_score'] = round(score, 1)
                     res['matched_products'] = list(set(matched_tags)) # Remove duplicatas
 
                     resultados.append(res)
@@ -285,6 +333,8 @@ elif page == "Buscar Licitações":
                 # Salvar no Banco
                 novos = 0
                 ignorados_duplicados = 0
+                high_priority_alerts = []
+                alert_threshold = 15
                 
                 for res in resultados:
                     exists = session.query(Licitacao).filter_by(pncp_id=res['pncp_id']).first()
@@ -294,10 +344,10 @@ elif page == "Buscar Licitações":
                             orgao=res['orgao'],
                             uf=res['uf'],
                             modalidade=res['modalidade'],
-                            data_sessao=datetime.fromisoformat(res['data_sessao']) if res.get('data_sessao') else None,
-                            data_publicacao=datetime.fromisoformat(res['data_publicacao']) if res.get('data_publicacao') else None,
-                            data_inicio_proposta=datetime.fromisoformat(res['data_inicio_proposta']) if res.get('data_inicio_proposta') else None,
-                            data_encerramento_proposta=datetime.fromisoformat(res['data_encerramento_proposta']) if res.get('data_encerramento_proposta') else None,
+                            data_sessao=safe_parse_date(res.get('data_sessao')),
+                            data_publicacao=safe_parse_date(res.get('data_publicacao')),
+                            data_inicio_proposta=safe_parse_date(res.get('data_inicio_proposta')),
+                            data_encerramento_proposta=safe_parse_date(res.get('data_encerramento_proposta')),
                             objeto=res['objeto'],
                             link=res['link']
                         )
@@ -320,11 +370,46 @@ elif page == "Buscar Licitações":
                         
                         match_itens(session, lic.id)
                         novos += 1
+
+                        if res.get('match_score', 0) >= alert_threshold or res.get('matched_products'):
+                            high_priority_alerts.append({
+                                "orgao": res.get('orgao'),
+                                "uf": res.get('uf'),
+                                "modalidade": res.get('modalidade'),
+                                "match_score": res.get('match_score'),
+                                "matched_products": res.get('matched_products', []),
+                                "dias_restantes": res.get('dias_restantes'),
+                                "link": res.get('link')
+                            })
                     else:
                         ignorados_duplicados += 1
                 
                 session.commit()
                 st.success(f"Busca finalizada! {novos} novas licitações importadas.")
+
+                # Notificação automática de alta prioridade
+                if high_priority_alerts:
+                    conf_phone = session.query(Configuracao).filter_by(chave='whatsapp_phone').first()
+                    conf_key = session.query(Configuracao).filter_by(chave='whatsapp_apikey').first()
+                    phone_val = conf_phone.valor if conf_phone else ""
+                    key_val = conf_key.valor if conf_key else ""
+
+                    if phone_val and key_val:
+                        notifier = WhatsAppNotifier(phone_val, key_val)
+                        preview = high_priority_alerts[:5]
+                        msg_lines = ["🚨 Novas licitações relevantes encontradas:"]
+                        for alert in preview:
+                            prazo = f"{alert['dias_restantes']}d" if alert.get('dias_restantes') not in (None, -999) else "prazo não informado"
+                            produtos = ", ".join(alert.get('matched_products', [])) or "sem match claro"
+                            msg_lines.append(
+                                f"- [{alert['uf']}] {alert['orgao']} ({alert['modalidade']})\n  Score: {alert.get('match_score')}\n  Prazo: {prazo}\n  Produtos: {produtos}\n  {alert['link']}"
+                            )
+                        if len(high_priority_alerts) > len(preview):
+                            msg_lines.append(f"...+{len(high_priority_alerts) - len(preview)} outras.")
+                        notifier.enviar_mensagem("\n".join(msg_lines))
+                    else:
+                        st.info("Novas licitações prioritárias encontradas. Configure WhatsApp em Configurações para receber alertas.")
+
                 session.close()
         
     st.divider()
@@ -338,6 +423,64 @@ elif page == "Buscar Licitações":
             session.close()
             st.success("Banco de dados limpo!")
             st.rerun()
+
+    st.divider()
+    st.subheader("Buscar por ID PNCP (debug de edital específico)")
+    pncp_id_input = st.text_input("Informe o PNCP ID ou URL (ex: 08308470000129-2025-24 ou link do edital)")
+    if st.button("🔍 Buscar e importar este edital"):
+        client = PNCPClient()
+        cnpj = ano = seq = None
+        text = pncp_id_input.strip()
+        if "/" in text:
+            parts = text.strip().split("/")
+            if len(parts) >= 3:
+                cnpj, ano, seq = parts[-3], parts[-2], parts[-1]
+        elif "-" in text:
+            parts = text.split("-")
+            if len(parts) == 3:
+                cnpj, ano, seq = parts
+        if not (cnpj and ano and seq):
+            st.error("Formato inválido. Use CNPJ-ANO-SEQ ou URL do PNCP.")
+        else:
+            res = client.buscar_por_id(cnpj, ano, seq)
+            if not res:
+                st.error("Não foi possível buscar este edital.")
+            else:
+                session = get_session()
+                exists = session.query(Licitacao).filter_by(pncp_id=res['pncp_id']).first()
+                if exists:
+                    st.info("Já está no banco.")
+                else:
+                    lic = Licitacao(
+                        pncp_id=res['pncp_id'],
+                        orgao=res['orgao'],
+                        uf=res['uf'],
+                        modalidade=res['modalidade'],
+                        data_sessao=safe_parse_date(res.get('data_sessao')),
+                        data_publicacao=safe_parse_date(res.get('data_publicacao')),
+                        data_inicio_proposta=safe_parse_date(res.get('data_inicio_proposta')),
+                        data_encerramento_proposta=safe_parse_date(res.get('data_encerramento_proposta')),
+                        objeto=res['objeto'],
+                        link=res['link']
+                    )
+                    session.add(lic)
+                    session.flush()
+                    itens_api = client.buscar_itens(res)
+                    for i in itens_api:
+                        item_db = ItemLicitacao(
+                            licitacao_id=lic.id,
+                            numero_item=i['numero'],
+                            descricao=i['descricao'],
+                            quantidade=i['quantidade'],
+                            unidade=i['unidade'],
+                            valor_estimado=i['valor_estimado'],
+                            valor_unitario=i['valor_unitario']
+                        )
+                        session.add(item_db)
+                    match_itens(session, lic.id)
+                    session.commit()
+                    session.close()
+                    st.success("Edital importado com sucesso! Veja no Dashboard.")
 
 elif page == "Gestão (Kanban)":
     st.header("📋 Gestão de Licitações (Kanban)")
@@ -480,7 +623,7 @@ elif page == "Dashboard":
                         "Match": match_nome
                     })
                     
-                st.dataframe(pd.DataFrame(data_itens), use_container_width=True)
+                st.dataframe(pd.DataFrame(data_itens), width="stretch")
                 
                 col_a, col_b = st.columns(2)
                 with col_a:
@@ -523,8 +666,6 @@ elif page == "Dashboard":
                             
                     # Botão de IA
                     if st.button("✨ Gerar Resumo IA", key=f"btn_ai_{lic.id}"):
-                        from ai_helper import summarize_bidding, configure_genai
-                        
                         session = get_session()
                         api_key = session.query(Configuracao).filter_by(chave='gemini_api_key').first()
                         session.close()
@@ -540,8 +681,6 @@ elif page == "Dashboard":
                             
                     # Botão de Estimativa de Preço (Novo)
                     if st.button("💰 Estimar Preços de Mercado (IA)", key=f"btn_price_all_{lic.id}"):
-                        from ai_helper import estimate_market_price, configure_genai, get_google_price_estimate
-                        
                         session = get_session()
                         api_key = session.query(Configuracao).filter_by(chave='gemini_api_key').first()
                         session.close()

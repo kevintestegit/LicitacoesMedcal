@@ -8,3 +8,4 @@ google-generativeai
 playwright
 googlesearch-python
 pypdf
+rapidfuzz
