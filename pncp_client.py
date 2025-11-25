@@ -152,7 +152,16 @@ class PNCPClient:
         # Bloqueia outros serviços assistenciais que não são fornecimento de produtos
         "SERVIÇOS MÉDICOS", "SERVICOS MEDICOS", "PRESTAÇÃO DE SERVIÇOS MÉDICOS",
         "SERVIÇOS DE SAÚDE", "SERVICOS DE SAUDE", "PRESTAÇÃO DE SERVIÇOS DE SAÚDE",
-        "ATENDIMENTO AMBULATORIAL", "CONSULTA MÉDICA", "CONSULTAS MEDICAS"
+        "ATENDIMENTO AMBULATORIAL", "CONSULTA MÉDICA", "CONSULTAS MEDICAS",
+
+        # Novos termos adicionados (Computadores/TI, Intercâmbio, Água/Alimentos)
+        "COMPUTADOR", "COMPUTADORES", "NOTEBOOK", "NOTEBOOKS", "WEBCAM", "WEBCAMS", 
+        "DESKTOP", "PC", "TABLET", "TABLETS", "IMPRESSORA", "IMPRESSORAS", 
+        "SCANNER", "SCANNERS", "PERIFERICOS", "PERIFÉRICOS",
+        "INTERCAMBIO", "INTERCÂMBIO", "EDUCACIONAL", "CULTURAL", "ESTUDANTE", 
+        "ESTUDANTES", "ALUNO", "ALUNOS", "PEDAGOGICO", "PEDAGÓGICO",
+        "AGUA MINERAL", "ÁGUA MINERAL", "GARRAFÃO", "GARRAFAO", "GARRAFA", 
+        "COPO", "BEBIDA", "ALIMENTACAO", "ALIMENTAÇÃO", "LANCHE", "REFEICAO", "REFEIÇÃO"
     ]
     # Termos POSITIVOS padrão (Unificado)
     TERMOS_POSITIVOS_PADRAO = [
@@ -200,6 +209,10 @@ class PNCPClient:
     ]
 
     def __init__(self):
+        self.session = requests.Session()
+        adapter = requests.adapters.HTTPAdapter(max_retries=3)
+        self.session.mount('https://', adapter)
+        self.session.mount('http://', adapter)
         self.headers = {
             "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/120.0.0.0 Safari/537.36"
         }
@@ -276,23 +289,20 @@ class PNCPClient:
                         params["dataFinalEncerramentoProposta"] = data_final_enc
 
                     try:
-                        resp = requests.get(self.BASE_URL, params=params, headers=self.headers, timeout=10)
+                        # Aumentado timeout para 30s e usando session com retry
+                        resp = self.session.get(self.BASE_URL, params=params, headers=self.headers, timeout=30)
 
                         # Fallback: alguns clusters do PNCP exigem data no formato AAAA-MM-DD
                         if resp.status_code == 400:
                             params_iso = params.copy()
                             params_iso["dataInicial"] = data_inicial_iso
                             params_iso["dataFinal"] = data_final_iso
-                            resp = requests.get(self.BASE_URL, params=params_iso, headers=self.headers, timeout=10)
+                            resp = self.session.get(self.BASE_URL, params=params_iso, headers=self.headers, timeout=30)
 
                         if resp.status_code != 200:
-                            body = ""
-                            try:
-                                body = resp.text[:200]
-                            except Exception:
-                                body = "<sem corpo>"
-                            print(f"  ⚠️ Erro HTTP {resp.status_code} - Página {pagina} | {body}")
-                            break
+                            print(f"  ⚠️ Erro HTTP {resp.status_code} - Página {pagina}")
+                            # Não quebra o loop, tenta a próxima página ou modalidade
+                            continue
 
                         data = resp.json().get('data', [])
                         total_api += len(data)
@@ -339,9 +349,12 @@ class PNCPClient:
                             parsed['dias_restantes'] = dias_restantes
                             resultados.append(parsed)
                             
+                    except requests.exceptions.ReadTimeout:
+                        print(f"  ❌ Timeout na página {pagina} de {uf}. Tentando próxima...")
+                        continue
                     except Exception as e:
-                        print(f"  ❌ ERRO: {e}")
-                        break
+                        print(f"  ❌ ERRO na página {pagina}: {e}")
+                        continue
 
                     # Se veio menos que o tamanho da página, acabou a lista
                     if len(data) < tamanho_pagina:

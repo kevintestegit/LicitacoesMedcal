@@ -102,6 +102,182 @@ def match_itens(session, licitacao_id, limiar=80):
     session.commit()
     return count
 
+def processar_resultados(resultados_raw):
+    """Processa, filtra, pontua e salva uma lista de resultados brutos."""
+    if not resultados_raw:
+        st.warning("Nenhum resultado encontrado para processar.")
+        return
+
+    session = get_session()
+    client = PNCPClient()
+    
+    # Carrega produtos para matching
+    prods = session.query(Produto).all()
+    
+    total_api = len(resultados_raw)
+    
+    # Filtro de Data de Início de Proposta (Pós-processamento)
+    resultados = []
+    hoje_date = datetime.now().date()
+    ignorados_data = 0
+    
+    for res in resultados_raw:
+        # REGRA SIMPLES: Mostra APENAS se ainda dá tempo de enviar proposta
+        # Critério: Data de FIM de proposta >= HOJE
+
+        encerramento_str = res.get('data_encerramento_proposta')
+        should_exclude = False
+
+        if encerramento_str:
+            try:
+                fim_dt = datetime.fromisoformat(encerramento_str).date()
+                # Se data de fim JÁ PASSOU → EXCLUI
+                if fim_dt < hoje_date:
+                    should_exclude = True
+            except:
+                # Se der erro ao parsear data, mantém (não exclui por segurança)
+                pass
+        else:
+            # Se NÃO tem data de encerramento:
+            # - Se for PNCP (sem 'origem' ou origem='PNCP'), exclui.
+            # - Se for Scraper Externo (tem 'origem' e != 'PNCP'), MANTÉM (pois scrapers de PDF não pegam data).
+            origem = res.get('origem')
+            if not origem or origem == 'PNCP':
+                should_exclude = True
+            else:
+                should_exclude = False # Mantém resultados de scrapers externos sem data
+
+        if should_exclude:
+            ignorados_data += 1
+            continue
+
+        # --- Lógica de Priorização (Match Score) ---
+        score = 0
+        matched_tags = []
+        obj_text = res['objeto']
+        obj_norm = normalize_text(obj_text)
+
+        # Verifica match com produtos do catálogo usando fuzzy
+        for p in prods:
+            p_keywords = [k.strip() for k in p.palavras_chave.split(',') if k.strip()]
+            p_keywords.append(p.nome)
+            match_score, kw = best_match_against_keywords(obj_text, p_keywords)
+            if match_score >= 75:
+                bonus = 15 if match_score >= 85 else 10
+                score += bonus
+                matched_tags.append(p.nome)
+
+        # Termos positivos padrão (peso menor, usa texto normalizado)
+        for t in client.TERMOS_POSITIVOS_PADRAO:
+            if normalize_text(t) in obj_norm:
+                score += 0.5
+
+        # Peso por urgência de prazo
+        dias_restantes = res.get('dias_restantes')
+        if dias_restantes in (None, -999) and res.get('data_encerramento_proposta'):
+            dias_restantes = client.calcular_dias(res.get('data_encerramento_proposta'))
+        res['dias_restantes'] = dias_restantes
+        if dias_restantes is not None and dias_restantes >= 0:
+            if dias_restantes <= 7:
+                score += 5
+            elif dias_restantes <= 14:
+                score += 3
+        
+        res['match_score'] = round(score, 1)
+        res['matched_products'] = list(set(matched_tags)) # Remove duplicatas
+
+        resultados.append(res)
+
+    # Ordena por Score (Decrescente)
+    resultados.sort(key=lambda x: x.get('match_score', 0), reverse=True)
+
+    st.write(f"  Diagnóstico da Busca:")
+    st.write(f"- Encontrados na API: {total_api}")
+    st.write(f"- Ignorados pelo Filtro de Data (Passado): {ignorados_data}")
+    st.write(f"- Restantes para Importação: {len(resultados)}")
+    
+    # Salvar no Banco
+    novos = 0
+    ignorados_duplicados = 0
+    high_priority_alerts = []
+    alert_threshold = 15
+    
+    for res in resultados:
+        exists = session.query(Licitacao).filter_by(pncp_id=res['pncp_id']).first()
+        if not exists:
+            lic = Licitacao(
+                pncp_id=res['pncp_id'],
+                orgao=res['orgao'],
+                uf=res['uf'],
+                modalidade=res['modalidade'],
+                data_sessao=safe_parse_date(res.get('data_sessao')),
+                data_publicacao=safe_parse_date(res.get('data_publicacao')),
+                data_inicio_proposta=safe_parse_date(res.get('data_inicio_proposta')),
+                data_encerramento_proposta=safe_parse_date(res.get('data_encerramento_proposta')),
+                objeto=res['objeto'],
+                link=res['link']
+            )
+            session.add(lic)
+            session.flush()
+
+            # Buscar itens
+            itens_api = client.buscar_itens(res)
+            for i in itens_api:
+                item_db = ItemLicitacao(
+                    licitacao_id=lic.id,
+                    numero_item=i['numero'],
+                    descricao=i['descricao'],
+                    quantidade=i['quantidade'],
+                    unidade=i['unidade'],
+                    valor_estimado=i['valor_estimado'],
+                    valor_unitario=i['valor_unitario']
+                )
+                session.add(item_db)
+            
+            match_itens(session, lic.id)
+            novos += 1
+
+            if res.get('match_score', 0) >= alert_threshold or res.get('matched_products'):
+                high_priority_alerts.append({
+                    "orgao": res.get('orgao'),
+                    "uf": res.get('uf'),
+                    "modalidade": res.get('modalidade'),
+                    "match_score": res.get('match_score'),
+                    "matched_products": res.get('matched_products', []),
+                    "dias_restantes": res.get('dias_restantes'),
+                    "link": res.get('link')
+                })
+        else:
+            ignorados_duplicados += 1
+    
+    session.commit()
+    st.success(f"Busca finalizada! {novos} novas licitações importadas.")
+
+    # Notificação automática de alta prioridade
+    if high_priority_alerts:
+        conf_phone = session.query(Configuracao).filter_by(chave='whatsapp_phone').first()
+        conf_key = session.query(Configuracao).filter_by(chave='whatsapp_apikey').first()
+        phone_val = conf_phone.valor if conf_phone else ""
+        key_val = conf_key.valor if conf_key else ""
+
+        if phone_val and key_val:
+            notifier = WhatsAppNotifier(phone_val, key_val)
+            preview = high_priority_alerts[:5]
+            msg_lines = ["🚨 Novas licitações relevantes encontradas:"]
+            for alert in preview:
+                prazo = f"{alert['dias_restantes']}d" if alert.get('dias_restantes') not in (None, -999) else "prazo não informado"
+                produtos = ", ".join(alert.get('matched_products', [])) or "sem match claro"
+                msg_lines.append(
+                    f"- [{alert['uf']}] {alert['orgao']} ({alert['modalidade']})\n  Score: {alert.get('match_score')}\n  Prazo: {prazo}\n  Produtos: {produtos}\n  {alert['link']}"
+                )
+            if len(high_priority_alerts) > len(preview):
+                msg_lines.append(f"...+{len(high_priority_alerts) - len(preview)} outras.")
+            notifier.enviar_mensagem("\n".join(msg_lines))
+        else:
+            st.info("Novas licitações prioritárias encontradas. Configure WhatsApp em Configurações para receber alertas.")
+
+    session.close()
+
 # --- PÁGINAS ---
 
 if page == "Meu Catálogo":
@@ -152,32 +328,106 @@ elif page == "Buscar Licitações":
                               help="Se marcado, traz TUDO o que foi publicado, sem filtrar por termos médicos. Útil para garantir que nada passou batido.")
 
     st.markdown("#### Fontes Extras - Diários Oficiais Municipais")
+    
+    # --- FEMURN (RN) ---
     col_ext1, col_ext2, col_ext3 = st.columns(3)
     with col_ext1:
         st.markdown("**Rio Grande do Norte**")
-        use_femurn = st.checkbox("FEMURN (RN)", value=True, help="Diário Oficial dos Municípios do RN")
+        col_chk, col_btn = st.columns([0.7, 0.3])
+        with col_chk:
+            use_femurn = st.checkbox("FEMURN (RN)", value=True, help="Diário Oficial dos Municípios do RN")
+        with col_btn:
+            if st.button("▶️", key="btn_femurn", help="Rodar apenas FEMURN"):
+                client = PNCPClient()
+                with st.status("Buscando no FEMURN...", expanded=True):
+                    scraper = FemurnScraper()
+                    res = scraper.buscar_oportunidades(client.TERMOS_POSITIVOS_PADRAO, termos_negativos=client.TERMOS_NEGATIVOS_PADRAO)
+                    processar_resultados(res)
+
+    # --- FAMUP (PB) ---
     with col_ext2:
         st.markdown("**Paraíba**")
-        use_famup = st.checkbox("FAMUP (PB)", value=True, help="Diário Oficial dos Municípios da PB")
+        col_chk, col_btn = st.columns([0.7, 0.3])
+        with col_chk:
+            use_famup = st.checkbox("FAMUP (PB)", value=True, help="Diário Oficial dos Municípios da PB")
+        with col_btn:
+            if st.button("▶️", key="btn_famup", help="Rodar apenas FAMUP"):
+                client = PNCPClient()
+                with st.status("Buscando no FAMUP...", expanded=True):
+                    scraper = FamupScraper()
+                    res = scraper.buscar_oportunidades(client.TERMOS_POSITIVOS_PADRAO, termos_negativos=client.TERMOS_NEGATIVOS_PADRAO)
+                    processar_resultados(res)
+
+    # --- AMUPE (PE) ---
     with col_ext3:
         st.markdown("**Pernambuco**")
-        use_amupe = st.checkbox("AMUPE (PE)", value=True, help="Diário Oficial dos Municípios de PE")
+        col_chk, col_btn = st.columns([0.7, 0.3])
+        with col_chk:
+            use_amupe = st.checkbox("AMUPE (PE)", value=True, help="Diário Oficial dos Municípios de PE")
+        with col_btn:
+            if st.button("▶️", key="btn_amupe", help="Rodar apenas AMUPE"):
+                client = PNCPClient()
+                with st.status("Buscando no AMUPE...", expanded=True):
+                    scraper = AmupeScraper()
+                    res = scraper.buscar_oportunidades(client.TERMOS_POSITIVOS_PADRAO, termos_negativos=client.TERMOS_NEGATIVOS_PADRAO)
+                    processar_resultados(res)
 
+    # --- ALAGOAS ---
     st.markdown("**Alagoas**")
     col_al1, col_al2, col_al3, col_al4 = st.columns(4)
+    
     with col_al1:
-        use_ama = st.checkbox("AMA (AL)", value=True, help="Associação dos Municípios Alagoanos")
+        col_chk, col_btn = st.columns([0.7, 0.3])
+        with col_chk:
+            use_ama = st.checkbox("AMA (AL)", value=True, help="Associação dos Municípios Alagoanos")
+        with col_btn:
+            if st.button("▶️", key="btn_ama", help="Rodar apenas AMA"):
+                client = PNCPClient()
+                with st.status("Buscando no AMA...", expanded=True):
+                    scraper = AmaScraper()
+                    res = scraper.buscar_oportunidades(client.TERMOS_POSITIVOS_PADRAO, termos_negativos=client.TERMOS_NEGATIVOS_PADRAO)
+                    processar_resultados(res)
+
     with col_al2:
-        use_maceio = st.checkbox("Maceió", value=True, help="Diário Oficial de Maceió")
+        col_chk, col_btn = st.columns([0.7, 0.3])
+        with col_chk:
+            use_maceio = st.checkbox("Maceió", value=True, help="Diário Oficial de Maceió")
+        with col_btn:
+            if st.button("▶️", key="btn_maceio", help="Rodar apenas Maceió"):
+                client = PNCPClient()
+                with st.status("Buscando em Maceió...", expanded=True):
+                    scraper = MaceioScraper()
+                    res = scraper.buscar_oportunidades(client.TERMOS_POSITIVOS_PADRAO, termos_negativos=client.TERMOS_NEGATIVOS_PADRAO)
+                    processar_resultados(res)
+
     with col_al3:
-        use_maceio_investe = st.checkbox("Maceió Investe", value=True, help="Diário Oficial Maceió Investe")
+        col_chk, col_btn = st.columns([0.7, 0.3])
+        with col_chk:
+            use_maceio_investe = st.checkbox("Maceió Investe", value=True, help="Diário Oficial Maceió Investe")
+        with col_btn:
+            if st.button("▶️", key="btn_maceio_inv", help="Rodar apenas Maceió Investe"):
+                client = PNCPClient()
+                with st.status("Buscando em Maceió Investe...", expanded=True):
+                    scraper = MaceioInvesteScraper()
+                    res = scraper.buscar_oportunidades(client.TERMOS_POSITIVOS_PADRAO, termos_negativos=client.TERMOS_NEGATIVOS_PADRAO)
+                    processar_resultados(res)
+
     with col_al4:
-        use_maceio_saude = st.checkbox("Maceió Saúde", value=True, help="Diário Oficial Maceió Saúde")
+        col_chk, col_btn = st.columns([0.7, 0.3])
+        with col_chk:
+            use_maceio_saude = st.checkbox("Maceió Saúde", value=True, help="Diário Oficial Maceió Saúde")
+        with col_btn:
+            if st.button("▶️", key="btn_maceio_saude", help="Rodar apenas Maceió Saúde"):
+                client = PNCPClient()
+                with st.status("Buscando em Maceió Saúde...", expanded=True):
+                    scraper = MaceioSaudeScraper()
+                    res = scraper.buscar_oportunidades(client.TERMOS_POSITIVOS_PADRAO, termos_negativos=client.TERMOS_NEGATIVOS_PADRAO)
+                    processar_resultados(res)
 
     # Filtro de futuro agora é MANDATÓRIO
     filtro_futuro = True 
 
-    if st.button("🚀 Iniciar Varredura no PNCP"):
+    if st.button("🚀 Iniciar Varredura Completa (PNCP + Selecionados)"):
         client = PNCPClient()
         
         # Pega termos do catálogo para filtrar a busca inicial
@@ -187,33 +437,28 @@ elif page == "Buscar Licitações":
         for p in prods:
             all_keywords.extend([k.strip().upper() for k in p.palavras_chave.split(',')])
         all_keywords = list(set(all_keywords)) # Remove duplicatas
+        session.close()
         
         # Se busca ampla, ignoramos a validação de catálogo vazio
         if not all_keywords and not busca_ampla:
             st.warning("Seu catálogo está vazio! Cadastre produtos para gerar palavras-chave de busca.")
         else:
-            with st.status("Buscando no PNCP...", expanded=True) as status:
+            with st.status("Buscando no PNCP e Fontes Extras...", expanded=True) as status:
                 
                 if busca_ampla:
                     st.write("⚠️ MODO VARREDURA: Buscando todas as licitações (sem filtro de termos)...")
                     termos_busca = [] # Lista vazia desativa o filtro no client
                 else:
-                    # Combina termos do catálogo com os termos padrão da área médica
-                    # MUDANÇA SOLICITADA: Usar APENAS termos padrão positivos (ignorando CNAE/Catálogo por enquanto para limpar "sujeira")
-                    # termos_busca = list(set(all_keywords + client.TERMOS_POSITIVOS_PADRAO))
                     termos_busca = client.TERMOS_POSITIVOS_PADRAO
                     st.write(f"Filtrando por {len(termos_busca)} termos (Apenas Padrão Medcal)...")
                 
                 # Busca PNCP
                 resultados_raw = client.buscar_oportunidades(dias, estados, termos_positivos=termos_busca)
                 
-                # Busca Fontes Extras
-
-
+                # Busca Fontes Extras (se marcadas)
                 if use_femurn:
                     st.write("Baixando e analisando Diário Oficial do FEMURN (PDF)...")
                     scraper_femurn = FemurnScraper()
-                    # Forçamos o filtro estrito (termos prioritários) para evitar "Aviso de Edital" genérico
                     res_femurn = scraper_femurn.buscar_oportunidades(client.TERMOS_POSITIVOS_PADRAO, termos_negativos=client.TERMOS_NEGATIVOS_PADRAO)
                     resultados_raw.extend(res_femurn)
 
@@ -254,163 +499,8 @@ elif page == "Buscar Licitações":
                     res_maceio_saude = scraper_maceio_saude.buscar_oportunidades(client.TERMOS_POSITIVOS_PADRAO, termos_negativos=client.TERMOS_NEGATIVOS_PADRAO)
                     resultados_raw.extend(res_maceio_saude)
 
-                total_api = len(resultados_raw)
-                
-                # Filtro de Data de Início de Proposta (Pós-processamento)
-                resultados = []
-                hoje_date = datetime.now().date()
-                ignorados_data = 0
-                
-                for res in resultados_raw:
-                    # REGRA SIMPLES: Mostra APENAS se ainda dá tempo de enviar proposta
-                    # Critério: Data de FIM de proposta >= HOJE
-
-                    encerramento_str = res.get('data_encerramento_proposta')
-                    should_exclude = False
-
-                    if encerramento_str:
-                        try:
-                            fim_dt = datetime.fromisoformat(encerramento_str).date()
-                            # Se data de fim JÁ PASSOU → EXCLUI
-                            if fim_dt < hoje_date:
-                                should_exclude = True
-                        except:
-                            # Se der erro ao parsear data, mantém (não exclui por segurança)
-                            pass
-                    else:
-                        # Se NÃO tem data de encerramento, exclui (não dá para participar)
-                        should_exclude = True
-
-                    if should_exclude:
-                        ignorados_data += 1
-                        continue
-
-                    # --- Lógica de Priorização (Match Score) ---
-                    score = 0
-                    matched_tags = []
-                    obj_text = res['objeto']
-                    obj_norm = normalize_text(obj_text)
-
-                    # Verifica match com produtos do catálogo usando fuzzy
-                    for p in prods:
-                        p_keywords = [k.strip() for k in p.palavras_chave.split(',') if k.strip()]
-                        p_keywords.append(p.nome)
-                        match_score, kw = best_match_against_keywords(obj_text, p_keywords)
-                        if match_score >= 75:
-                            bonus = 15 if match_score >= 85 else 10
-                            score += bonus
-                            matched_tags.append(p.nome)
-
-                    # Termos positivos padrão (peso menor, usa texto normalizado)
-                    for t in client.TERMOS_POSITIVOS_PADRAO:
-                        if normalize_text(t) in obj_norm:
-                            score += 0.5
-
-                    # Peso por urgência de prazo
-                    dias_restantes = res.get('dias_restantes')
-                    if dias_restantes in (None, -999) and res.get('data_encerramento_proposta'):
-                        dias_restantes = client.calcular_dias(res.get('data_encerramento_proposta'))
-                    res['dias_restantes'] = dias_restantes
-                    if dias_restantes is not None and dias_restantes >= 0:
-                        if dias_restantes <= 7:
-                            score += 5
-                        elif dias_restantes <= 14:
-                            score += 3
-                    
-                    res['match_score'] = round(score, 1)
-                    res['matched_products'] = list(set(matched_tags)) # Remove duplicatas
-
-                    resultados.append(res)
-
-                # Ordena por Score (Decrescente)
-                resultados.sort(key=lambda x: x.get('match_score', 0), reverse=True)
-
-                st.write(f"  Diagnóstico da Busca:")
-                st.write(f"- Encontrados na API: {total_api}")
-                st.write(f"- Ignorados pelo Filtro de Data (Passado): {ignorados_data}")
-                st.write(f"- Restantes para Importação: {len(resultados)}")
-                
-                # Salvar no Banco
-                novos = 0
-                ignorados_duplicados = 0
-                high_priority_alerts = []
-                alert_threshold = 15
-                
-                for res in resultados:
-                    exists = session.query(Licitacao).filter_by(pncp_id=res['pncp_id']).first()
-                    if not exists:
-                        lic = Licitacao(
-                            pncp_id=res['pncp_id'],
-                            orgao=res['orgao'],
-                            uf=res['uf'],
-                            modalidade=res['modalidade'],
-                            data_sessao=safe_parse_date(res.get('data_sessao')),
-                            data_publicacao=safe_parse_date(res.get('data_publicacao')),
-                            data_inicio_proposta=safe_parse_date(res.get('data_inicio_proposta')),
-                            data_encerramento_proposta=safe_parse_date(res.get('data_encerramento_proposta')),
-                            objeto=res['objeto'],
-                            link=res['link']
-                        )
-                        session.add(lic)
-                        session.flush()
-
-                        # Buscar itens
-                        itens_api = client.buscar_itens(res)
-                        for i in itens_api:
-                            item_db = ItemLicitacao(
-                                licitacao_id=lic.id,
-                                numero_item=i['numero'],
-                                descricao=i['descricao'],
-                                quantidade=i['quantidade'],
-                                unidade=i['unidade'],
-                                valor_estimado=i['valor_estimado'],
-                                valor_unitario=i['valor_unitario']
-                            )
-                            session.add(item_db)
-                        
-                        match_itens(session, lic.id)
-                        novos += 1
-
-                        if res.get('match_score', 0) >= alert_threshold or res.get('matched_products'):
-                            high_priority_alerts.append({
-                                "orgao": res.get('orgao'),
-                                "uf": res.get('uf'),
-                                "modalidade": res.get('modalidade'),
-                                "match_score": res.get('match_score'),
-                                "matched_products": res.get('matched_products', []),
-                                "dias_restantes": res.get('dias_restantes'),
-                                "link": res.get('link')
-                            })
-                    else:
-                        ignorados_duplicados += 1
-                
-                session.commit()
-                st.success(f"Busca finalizada! {novos} novas licitações importadas.")
-
-                # Notificação automática de alta prioridade
-                if high_priority_alerts:
-                    conf_phone = session.query(Configuracao).filter_by(chave='whatsapp_phone').first()
-                    conf_key = session.query(Configuracao).filter_by(chave='whatsapp_apikey').first()
-                    phone_val = conf_phone.valor if conf_phone else ""
-                    key_val = conf_key.valor if conf_key else ""
-
-                    if phone_val and key_val:
-                        notifier = WhatsAppNotifier(phone_val, key_val)
-                        preview = high_priority_alerts[:5]
-                        msg_lines = ["🚨 Novas licitações relevantes encontradas:"]
-                        for alert in preview:
-                            prazo = f"{alert['dias_restantes']}d" if alert.get('dias_restantes') not in (None, -999) else "prazo não informado"
-                            produtos = ", ".join(alert.get('matched_products', [])) or "sem match claro"
-                            msg_lines.append(
-                                f"- [{alert['uf']}] {alert['orgao']} ({alert['modalidade']})\n  Score: {alert.get('match_score')}\n  Prazo: {prazo}\n  Produtos: {produtos}\n  {alert['link']}"
-                            )
-                        if len(high_priority_alerts) > len(preview):
-                            msg_lines.append(f"...+{len(high_priority_alerts) - len(preview)} outras.")
-                        notifier.enviar_mensagem("\n".join(msg_lines))
-                    else:
-                        st.info("Novas licitações prioritárias encontradas. Configure WhatsApp em Configurações para receber alertas.")
-
-                session.close()
+                # Processa tudo junto
+                processar_resultados(resultados_raw)
         
     st.divider()
     with st.expander("Limpeza do banco de dados"):
