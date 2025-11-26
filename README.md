@@ -7,7 +7,7 @@ Sistema de busca de licitações - Medcal FARMA
 - Não concorre: material odontológico, planos/serviços de saúde, obras/engenharia, TI genérica, vigilância/limpeza, viagens, veículos, combustíveis, construção civil, merenda etc.
 
 ## Como filtramos
-- Prioritários: locação/comodato/aluguel de equipamentos analíticos (hematologia, bioquímica, coagulação, imunologia, ionograma, gasometria/POCT), reagentes/insumos laboratoriais, consumíveis (luvas, máscaras, tubos/coleta). É o primeiro corte para reduzir ruído.
+- Prioritários: locação/comodato/aluguel de equipamentos analíticos/automatizados (hematologia, bioquímica, coagulação, imunologia, ionograma, gasometria/POCT), reagentes/insumos laboratoriais, consumíveis (luvas, máscaras, tubos/coleta). É o primeiro corte para reduzir ruído.
 - Positivos padrão: termos da área laboratório/hospitalar (reagentes, equipamentos, manutenção preventiva, linhas analíticas).
 - Negativos padrão: planos de saúde, serviços puros, obras/engenharia, viagens, combustíveis, veículos, TI genérica, odontológico, merenda, materiais de construção etc.
 - Apenas editais com prazo de proposta aberto: data de encerramento >= hoje (ou sem data, no caso de diários/PDF).

@@ -1,19 +1,48 @@
 import streamlit as st
 import pandas as pd
-from pncp_client import PNCPClient
-from external_scrapers import FemurnScraper, FamupScraper, AmupeScraper, AmaScraper, MaceioScraper, MaceioInvesteScraper, MaceioSaudeScraper
-from notifications import WhatsAppNotifier
-from ai_helper import get_google_price_estimate, estimate_market_price, configure_genai, summarize_bidding
-from database import init_db, get_session, Produto, Licitacao, ItemLicitacao, Configuracao
-from sqlalchemy import func
-from datetime import datetime
-from rapidfuzz import fuzz
+from datetime import datetime, date
+import time
+import os
 import unicodedata
+from rapidfuzz import fuzz
+
+# --- IMPORTS DOS MÓDULOS ---
+from modules.database.database import init_db, get_session, Licitacao, ItemLicitacao, Produto, Configuracao
+from modules.finance.bank_models import ContaBancaria, ExtratoBancario, Fatura, Conciliacao
+from modules.scrapers.pncp_client import PNCPClient
+from modules.scrapers.external_scrapers import FemurnScraper, FamupScraper, AmupeScraper, AmaScraper, MaceioScraper, MaceioInvesteScraper, MaceioSaudeScraper
+from modules.utils.notifications import WhatsAppNotifier
+from modules.ai.smart_analyzer import SmartAnalyzer
+from modules.ai.eligibility_checker import EligibilityChecker
+from modules.ai.improved_matcher import SemanticMatcher
+from modules.utils import importer # Import module instead of non-existent class
+from modules.utils.cnae_data import get_keywords_by_cnae
+from modules.ai.ai_config import configure_genai
+from modules.finance.extrato_parser import ExtratoParser
+from modules.finance.conciliador import ConciliadorFinanceiro
 
 # Inicializa Banco
 init_db()
 
+# Inicializa IA (tenta configurar se tiver chave)
+try:
+    configure_genai()
+except:
+    pass
+
 st.set_page_config(page_title="Medcal Licitações", layout="wide", page_icon="🏥")
+
+# --- CSS INJECTION ---
+def local_css(file_name):
+    with open(file_name) as f:
+        st.markdown(f'<style>{f.read()}</style>', unsafe_allow_html=True)
+
+try:
+    local_css("assets/style.css")
+except Exception as e:
+    st.warning(f"Erro ao carregar estilo: {e}")
+
+# --- UTILITÁRIOS DE TEXTO ---
 
 # --- UTILITÁRIOS DE TEXTO ---
 def normalize_text(texto: str) -> str:
@@ -48,13 +77,11 @@ def best_match_against_keywords(texto: str, keywords):
 
 # --- SIDEBAR ---
 st.sidebar.title("🏥 Medcal Gestão")
-page = st.sidebar.radio("Navegação", ["Dashboard", "Buscar Licitações", "Gestão (Kanban)", "Meu Catálogo", "📥 Importar & Relatórios", "Configurações"])
+page = st.sidebar.radio("Navegação", ["Dashboard", "Buscar Licitações", "Gestão (Kanban)", "🧠 Análise de IA", "Meu Catálogo", "📥 Importar & Relatórios", "💰 Gestão Financeira", "Configurações"])
 
 # --- FUNÇÕES AUXILIARES ---
 def salvar_produtos(df_editor):
     session = get_session()
-    # Lógica simplificada: deleta tudo e recria (para protótipo)
-    # Em produção, faríamos upsert
     session.query(Produto).delete()
     
     for index, row in df_editor.iterrows():
@@ -604,36 +631,193 @@ elif page == "Gestão (Kanban)":
             st.write(f"Total: {len(items)}")
             
             for lic in items:
-                with st.container(border=True):
-                    st.markdown(f"**{lic.orgao}**")
-                    st.caption(f"{lic.uf} | {lic.modalidade}")
-                    if lic.data_sessao:
-                        st.caption(f"📅 {lic.data_sessao.strftime('%d/%m/%Y')}")
+                # KANBAN CARD STYLE
+                st.markdown(f"""
+                <div class="css-card" style="padding: 16px; margin-bottom: 12px;">
+                    <div style="font-weight: 600; font-size: 14px; margin-bottom: 4px;">{lic.orgao}</div>
+                    <div style="font-size: 12px; color: #86868b; margin-bottom: 8px;">{lic.uf} • {lic.modalidade}</div>
+                    <div style="font-size: 12px; color: #1d1d1f;">{lic.objeto[:60]}...</div>
+                </div>
+                """, unsafe_allow_html=True)
+                
+                with st.expander("Ações & Detalhes"):
+                    st.caption(f"📅 {lic.data_sessao.strftime('%d/%m') if lic.data_sessao else '-'}")
+                    st.write(f"[Link]({lic.link})")
                     
-                    # Matches
-                    matches = sum(1 for item in lic.itens if item.produto_match_id is not None)
-                    if matches > 0:
-                        st.markdown(f"🔥 **{matches} matches**")
-                    
-                    with st.expander("Detalhes"):
-                        st.write(lic.objeto)
-                        st.write(f"[Link]({lic.link})")
-                        
-                        # Comentários
-                        comentario = st.text_area("Notas", value=lic.comentarios or "", key=f"com_{lic.id}")
-                        if st.button("Salvar Nota", key=f"btn_com_{lic.id}"):
-                            lic.comentarios = comentario
-                            session.commit()
-                            st.success("Nota salva!")
-                            st.rerun()
-                            
-                        # Mover Status
-                        novo_status = st.selectbox("Mover para:", status_list + ["Ignorada"], index=status_list.index(status) if status in status_list else 0, key=f"st_{lic.id}")
-                        if novo_status != lic.status:
-                            lic.status = novo_status
-                            session.commit()
-                            st.rerun()
+                    # Itens
+                    if lic.itens:
+                        st.markdown("**Itens:**")
+                        for item in lic.itens:
+                            match_icon = "✅" if item.produto_match_id else "📦"
+                            st.caption(f"{match_icon} {item.quantidade}x {item.descricao}")
 
+                    # Comentários
+                    comentario = st.text_area("Notas", value=lic.comentarios or "", key=f"com_{lic.id}", height=68)
+                    if st.button("Salvar", key=f"btn_com_{lic.id}"):
+                        lic.comentarios = comentario
+                        session.commit()
+                        st.success("Salvo!")
+                        st.rerun()
+                        
+                    # Mover Status
+                    novo_status = st.selectbox("Mover:", status_list + ["Ignorada"], index=status_list.index(status) if status in status_list else 0, key=f"st_{lic.id}")
+                    if novo_status != lic.status:
+                        lic.status = novo_status
+                        session.commit()
+                        st.rerun()
+
+    session.close()
+
+elif page == "🧠 Análise de IA":
+    st.header("🧠 Análise Inteligente de Licitações")
+    st.info("Use a Inteligência Artificial para analisar a viabilidade, riscos e elegibilidade dos editais.")
+
+    session = get_session()
+    # Lista licitações para análise (apenas as que não foram ignoradas/perdidas)
+    licitacoes = session.query(Licitacao).filter(Licitacao.status.in_(['Nova', 'Em Análise', 'Participar'])).order_by(Licitacao.data_publicacao.desc()).all()
+    
+    if not licitacoes:
+        st.warning("Nenhuma licitação disponível para análise.")
+    else:
+        lic_dict = {f"{l.id} - {l.orgao} ({l.modalidade})": l for l in licitacoes}
+        selected_lic_key = st.selectbox("Selecione uma Licitação para Analisar:", list(lic_dict.keys()))
+        
+        if selected_lic_key:
+            lic = lic_dict[selected_lic_key]
+            
+            # Exibe detalhes básicos
+            with st.expander("Detalhes da Licitação", expanded=False):
+                st.write(f"**Objeto:** {lic.objeto}")
+                st.write(f"**Link:** {lic.link}")
+                st.write(f"**Data:** {lic.data_publicacao}")
+            
+            if st.button("🤖 Gerar Análise Completa (Gemini)"):
+                with st.spinner("A IA está lendo o edital e analisando viabilidade..."):
+                    analyzer = SmartAnalyzer()
+                    eligibility = EligibilityChecker()
+                    matcher = SemanticMatcher()
+                    client = PNCPClient()
+                    
+                    # 1. Análise do Texto (Smart Analyzer)
+                    texto_analise = f"OBJETO: {lic.objeto}\n\nITENS:\n"
+                    for item in lic.itens:
+                        texto_analise += f"- {item.quantidade} {item.unidade} de {item.descricao}\n"
+                    
+                    # --- LEITURA PROFUNDA (DEEP READING) ---
+                    # Tenta baixar anexos se for PNCP
+                    if lic.pncp_id and len(lic.pncp_id.split('-')) == 3:
+                        try:
+                            cnpj, ano, seq = lic.pncp_id.split('-')
+                            lic_dict = {"cnpj": cnpj, "ano": ano, "seq": seq}
+                            arquivos = client.buscar_arquivos(lic_dict)
+                            
+                            # Prioriza Termo de Referência ou Edital
+                            pdf_url = None
+                            nome_arquivo = ""
+                            for arq in arquivos:
+                                nome_lower = (arq['titulo'] or "").lower() + (arq['nome'] or "").lower()
+                                if "termo de referencia" in nome_lower or "termo de referência" in nome_lower or "edital" in nome_lower:
+                                    if arq['url'] and (arq['url'].endswith('.pdf') or arq['url'].endswith('.PDF')):
+                                        pdf_url = arq['url']
+                                        nome_arquivo = arq['titulo'] or arq['nome']
+                                        break
+                            
+                            if pdf_url:
+                                st.toast(f"Baixando anexo: {nome_arquivo}...", icon="📥")
+                                pdf_content = client.download_arquivo(pdf_url)
+                                if pdf_content:
+                                    import io
+                                    from pypdf import PdfReader
+                                    
+                                    f = io.BytesIO(pdf_content)
+                                    reader = PdfReader(f)
+                                    texto_pdf = ""
+                                    for page in reader.pages:
+                                        texto_pdf += page.extract_text() + "\n"
+                                    
+                                    if texto_pdf:
+                                        texto_analise += f"\n\n--- CONTEÚDO EXTRAÍDO DO ANEXO ({nome_arquivo}) ---\n{texto_pdf[:50000]}" # Limite de 50k chars do PDF
+                                        st.toast("Texto do anexo extraído com sucesso!", icon="✅")
+                        except Exception as e:
+                            print(f"Erro no Deep Reading: {e}")
+                            st.error(f"Erro ao ler anexo: {e}")
+
+                    if len(texto_analise) < 200:
+                        texto_analise += "\n(Texto curto, análise pode ser limitada. Recomenda-se baixar o PDF completo para análise profunda.)"
+
+                    analise = analyzer.analisar_viabilidade(texto_analise)
+                    
+                    # 2. Verificação de Elegibilidade
+                    elegibilidade = eligibility.check_eligibility({
+                        "uf": lic.uf,
+                        "modalidade": lic.modalidade
+                    }, ai_analysis=analise)
+                    
+                    # 3. Matching Semântico (apenas se tiver itens)
+                    # (Opcional para esta visualização, foca na viabilidade)
+                    
+                    # --- EXIBIÇÃO DOS RESULTADOS (CARD STYLE) ---
+                    st.divider()
+                    
+                    if analise.get('erro'):
+                        st.error(f"❌ {analise.get('erro')}")
+                    else:
+                        st.markdown(f"""
+                        <div class="css-card">
+                            <div class="card-header">Resultado da Análise</div>
+                            <div class="card-title">Score de Viabilidade: <span style="color: #0071e3;">{analise.get('score_viabilidade', 0)}/100</span></div>
+                            <div style="margin-top: 10px; font-size: 16px;">{analise.get('resumo_objeto', 'N/A')}</div>
+                            <div style="margin-top: 10px; color: #86868b; font-size: 14px;"><em>"{analise.get('justificativa_score', 'N/A')}"</em></div>
+                        </div>
+                        """, unsafe_allow_html=True)
+
+                    # Elegibilidade
+                    if elegibilidade['eligible']:
+                        st.success("✅ Empresa Elegível para participar")
+                    else:
+                        st.error("🚫 Empresa INELEGÍVEL")
+                        for reason in elegibilidade['reasons']:
+                            st.write(f"- {reason}")
+                    
+                    if elegibilidade['warnings']:
+                        with st.expander("⚠️ Alertas de Elegibilidade"):
+                            for warn in elegibilidade['warnings']:
+                                st.write(f"- {warn}")
+
+                    # Red Flags e Pontos de Atenção
+                    col_red, col_att = st.columns(2)
+                    with col_red:
+                        st.markdown("""<div class="css-card" style="border-left: 4px solid #ff3b30;">
+                        <div class="card-title" style="font-size: 16px;">🚩 Riscos (Red Flags)</div>
+                        """, unsafe_allow_html=True)
+                        red_flags = analise.get('red_flags', [])
+                        if red_flags:
+                            for flag in red_flags:
+                                st.markdown(f"- {flag}")
+                        else:
+                            st.write("Nenhum risco grave identificado.")
+                        st.markdown("</div>", unsafe_allow_html=True)
+
+                    with col_att:
+                        st.markdown("""<div class="css-card" style="border-left: 4px solid #ffcc00;">
+                        <div class="card-title" style="font-size: 16px;">⚠️ Pontos de Atenção</div>
+                        """, unsafe_allow_html=True)
+                        att_points = analise.get('pontos_atencao', [])
+                        if att_points:
+                            for point in att_points:
+                                st.markdown(f"- {point}")
+                        else:
+                            st.write("Nenhum ponto de atenção específico.")
+                        st.markdown("</div>", unsafe_allow_html=True)
+
+                    # Documentos
+                    with st.expander("📄 Documentos Prováveis para Habilitação"):
+                        docs = analise.get('documentos_habilitacao', [])
+                        if docs:
+                            for doc in docs:
+                                st.write(f"- {doc}")
+                        else:
+                            st.write("Não foi possível extrair a lista de documentos.")
     session.close()
 
 elif page == "Dashboard":
@@ -668,129 +852,602 @@ elif page == "Dashboard":
                 icon = "⚠️"
                 label_match = f"{matches}/{total_itens} itens compatíveis"
             
-            with st.expander(f"{icon} [{lic.uf}] {lic.orgao} - {label_match}"):
-                st.write(f"**Objeto:** {lic.objeto}")
-                st.write(f"**Sessão:** {lic.data_sessao} | **Início Proposta:** {lic.data_inicio_proposta} | **Fim Proposta:** {lic.data_encerramento_proposta}")
-                st.write(f"**Link:** [Acessar PNCP]({lic.link})")
+            # CARD STYLE
+            with st.container():
+                st.markdown(f"""
+                <div class="css-card">
+                    <div class="card-header">{lic.modalidade} • {lic.uf}</div>
+                    <div class="card-title">{lic.orgao}</div>
+                    <div class="card-subtitle">Sessão: {lic.data_sessao.strftime('%d/%m/%Y') if lic.data_sessao else 'N/A'}</div>
+                    <div style="margin-bottom: 10px;">{lic.objeto[:200]}...</div>
+                </div>
+                """, unsafe_allow_html=True)
                 
-                # Tabela de Itens
-                data_itens = []
-                valor_total_proposta = 0
-                
-                for item in lic.itens:
-                    match_nome = "❌ Sem Match"
-                    custo = 0
-                    preco_venda = 0
-                    lucro = 0
-                    preco_ref = 0
-                    fonte_ref = "-"
-                    v_unit_edital = item.valor_unitario if item.valor_unitario else 0
-                    diff_percent = 0
+                with st.expander("Ver Detalhes e Itens"):
+                    st.write(f"**Link:** [Acessar PNCP]({lic.link})")
                     
-                    if item.produto_match:
-                        match_nome = f"✅ {item.produto_match.nome}"
-                        custo = item.produto_match.preco_custo
-                        margem = item.produto_match.margem_minima / 100
-                        preco_venda = custo * (1 + margem)
-                        lucro = (preco_venda - custo) * item.quantidade
-                        valor_total_proposta += preco_venda * item.quantidade
+                    # Tabela de Itens
+                    data_itens = []
+                    valor_total_proposta = 0
+                    
+                    for item in lic.itens:
+                        match_nome = "❌ Sem Match"
+                        custo = 0
+                        preco_venda = 0
+                        lucro = 0
+                        preco_ref = 0
+                        fonte_ref = "-"
+                        v_unit_edital = item.valor_unitario if item.valor_unitario else 0
+                        diff_percent = 0
                         
-                        preco_ref = item.produto_match.preco_referencia
-                        fonte_ref = item.produto_match.fonte_referencia
+                        if item.produto_match:
+                            match_nome = f"✅ {item.produto_match.nome}"
+                            custo = item.produto_match.preco_custo
+                            margem = item.produto_match.margem_minima / 100
+                            preco_venda = custo * (1 + margem)
+                            lucro = (preco_venda - custo) * item.quantidade
+                            valor_total_proposta += preco_venda * item.quantidade
+                            
+                            preco_ref = item.produto_match.preco_referencia
+                            fonte_ref = item.produto_match.fonte_referencia
+                            
+                            if v_unit_edital > 0 and custo > 0:
+                                diff_percent = ((v_unit_edital - custo) / custo) * 100
                         
-                        if v_unit_edital > 0 and custo > 0:
-                            diff_percent = ((v_unit_edital - custo) / custo) * 100
+                        data_itens.append({
+                            "Item": item.numero_item,
+                            "Descrição Edital": item.descricao,
+                            "Qtd": item.quantidade,
+                            "Unidade": item.unidade,
+                            "V. Unit. Edital": f"R$ {v_unit_edital:,.2f}",
+                            "Meu Custo": f"R$ {custo:,.2f}" if custo > 0 else "-",
+                            "Ref. Mercado": f"R$ {preco_ref:,.2f} ({fonte_ref})" if preco_ref > 0 else "-",
+                            "Dif. Custo %": f"{diff_percent:+.1f}%" if diff_percent != 0 else "-",
+                            "Match": match_nome
+                        })
+                        
+                    st.dataframe(pd.DataFrame(data_itens), width=None, use_container_width=True)
                     
-                    data_itens.append({
-                        "Item": item.numero_item,
-                        "Descrição Edital": item.descricao,
-                        "Qtd": item.quantidade,
-                        "Unidade": item.unidade,
-                        "V. Unit. Edital": f"R$ {v_unit_edital:,.2f}",
-                        "Meu Custo": f"R$ {custo:,.2f}" if custo > 0 else "-",
-                        "Ref. Mercado": f"R$ {preco_ref:,.2f} ({fonte_ref})" if preco_ref > 0 else "-",
-                        "Dif. Custo %": f"{diff_percent:+.1f}%" if diff_percent != 0 else "-",
-                        "Match": match_nome
-                    })
+                    col_a, col_b = st.columns(2)
+                    with col_a:
+                        if matches > 0:
+                            st.metric("Valor Total da Proposta (Itens com Match)", f"R$ {valor_total_proposta:,.2f}")
+                        else:
+                            st.warning("Nenhum item deste edital corresponde aos produtos do seu catálogo.")
                     
-                st.dataframe(pd.DataFrame(data_itens), width="stretch")
-                
-                col_a, col_b = st.columns(2)
-                with col_a:
-                    if matches > 0:
-                        st.metric("Valor Total da Proposta (Itens com Match)", f"R$ {valor_total_proposta:,.2f}")
+                    with col_b:
+                        if st.button("📄 Ver Arquivos do Edital", key=f"btn_arq_{lic.id}"):
+                            client = PNCPClient()
+                            # Reconstrói dict mínimo para buscar arquivos
+                            lic_dict = {
+                                "cnpj": lic.pncp_id.split('-')[0],
+                                "ano": lic.pncp_id.split('-')[1],
+                                "seq": lic.pncp_id.split('-')[2]
+                            }
+                            arquivos = client.buscar_arquivos(lic_dict)
+                            
+                            if arquivos:
+                                st.write("**Arquivos Disponíveis:**")
+                                for arq in arquivos:
+                                    st.markdown(f"- [{arq['titulo']}]({arq['url']})")
+                            else:
+                                st.info("Nenhum arquivo encontrado.")
+                                
+                        st.divider()
+                        st.markdown("### 🧠 Inteligência Artificial")
+                        
+                        # Seletor de Item para Estimativa
+                        item_opts = {f"{i.numero_item} - {i.descricao[:50]}...": i.descricao for i in lic.itens}
+                        if item_opts:
+                            selected_item_label = st.selectbox("Selecione um item para estimar preço de mercado:", list(item_opts.keys()), key=f"sel_item_{lic.id}")
+                            
+                            # Botão de IA
+                            if st.button("✨ Gerar Resumo IA", key=f"btn_ai_{lic.id}"):
+                                session = get_session()
+                                api_key = session.query(Configuracao).filter_by(chave='gemini_api_key').first()
+                                session.close()
+                                
+                                if api_key and api_key.valor:
+                                    configure_genai(api_key.valor)
+                                    with st.spinner("A IA está analisando o edital..."):
+                                        # summarize_bidding is not imported, using SmartAnalyzer directly or implementing inline
+                                        # For now, let's use SmartAnalyzer logic if available or just a placeholder if function missing
+                                        # Assuming summarize_bidding was a placeholder in previous code, replacing with SmartAnalyzer
+                                        analyzer = SmartAnalyzer()
+                                        texto_analise = f"OBJETO: {lic.objeto}\n\nITENS:\n"
+                                        for item in lic.itens:
+                                            texto_analise += f"- {item.quantidade} {item.unidade} de {item.descricao}\n"
+                                        analise = analyzer.analisar_viabilidade(texto_analise)
+                                        st.markdown("### 🤖 Análise da IA")
+                                        st.write(analise.get('resumo_objeto'))
+                                        st.write(f"**Score:** {analise.get('score_viabilidade')}")
+                                else:
+                                    st.error("Configure a API Key do Gemini na aba Configurações primeiro!")
+
+elif page == "💰 Gestão Financeira":
+    st.header("💰 Gestão Financeira & Auditoria de Extratos")
+    st.info("Gerencie suas contas bancárias, importe extratos e faça auditoria automática de faturas pagas.")
+
+    # Sub-navegação com tabs
+    tab1, tab2, tab3, tab4, tab5 = st.tabs(["📊 Dashboard", "🏦 Contas", "📤 Extratos", "📄 Faturas", "🔍 Conciliação"])
+
+    session = get_session()
+
+    # ==================== TAB 1: DASHBOARD ====================
+    with tab1:
+        st.subheader("📊 Visão Geral Financeira")
+
+        # Indicadores principais
+        col1, col2, col3, col4 = st.columns(4)
+
+        # Total de contas
+        total_contas = session.query(ContaBancaria).filter_by(ativo=True).count()
+
+        # Faturas pendentes
+        faturas_pendentes = session.query(Fatura).filter(Fatura.status.in_(['PENDENTE', 'PARCIAL'])).all()
+        total_pendente = sum(f.valor_restante for f in faturas_pendentes)
+        qtd_pendentes = len(faturas_pendentes)
+
+        # Faturas vencidas
+        faturas_vencidas = [f for f in faturas_pendentes if f.esta_vencida]
+        total_vencido = sum(f.valor_restante for f in faturas_vencidas)
+        qtd_vencidas = len(faturas_vencidas)
+
+        # Extratos não conciliados
+        extratos_pendentes = session.query(ExtratoBancario).filter_by(conciliado=False).count()
+
+        with col1:
+            st.metric("Contas Ativas", total_contas)
+        with col2:
+            st.metric("Faturas Pendentes", f"{qtd_pendentes}", f"R$ {total_pendente:,.2f}")
+        with col3:
+            st.metric("Faturas Vencidas", f"{qtd_vencidas}", f"R$ {total_vencido:,.2f}", delta_color="inverse")
+        with col4:
+            st.metric("Extratos Pendentes", extratos_pendentes)
+
+        st.divider()
+
+        # Próximos vencimentos
+        col_a, col_b = st.columns(2)
+
+        with col_a:
+            st.markdown("### 📅 Próximos Vencimentos (15 dias)")
+            from datetime import timedelta
+            hoje = datetime.now().date()
+            limite = hoje + timedelta(days=15)
+
+            proximas = session.query(Fatura).filter(
+                Fatura.status.in_(['PENDENTE', 'PARCIAL']),
+                Fatura.data_vencimento.between(hoje, limite)
+            ).order_by(Fatura.data_vencimento).all()
+
+            if proximas:
+                for fat in proximas:
+                    dias_ate = (fat.data_vencimento - hoje).days
+                    cor = "🔴" if dias_ate <= 3 else "🟡" if dias_ate <= 7 else "🟢"
+                    st.write(f"{cor} **{fat.fornecedor_cliente}** - R$ {fat.valor_restante:,.2f}")
+                    st.caption(f"Vence em {dias_ate} dias ({fat.data_vencimento.strftime('%d/%m/%Y')})")
+            else:
+                st.success("Nenhum vencimento próximo!")
+
+        with col_b:
+            st.markdown("### 🚨 Faturas Vencidas")
+            if faturas_vencidas:
+                for fat in faturas_vencidas[:10]:
+                    dias_vencido = (hoje - fat.data_vencimento).days
+                    st.write(f"🔴 **{fat.fornecedor_cliente}** - R$ {fat.valor_restante:,.2f}")
+                    st.caption(f"Vencida há {dias_vencido} dias ({fat.data_vencimento.strftime('%d/%m/%Y')})")
+            else:
+                st.success("Nenhuma fatura vencida!")
+
+    # ==================== TAB 2: CONTAS BANCÁRIAS ====================
+    with tab2:
+        st.subheader("🏦 Cadastro de Contas Bancárias")
+
+        # Formulário de nova conta
+        with st.expander("➕ Adicionar Nova Conta", expanded=False):
+            with st.form("form_nova_conta"):
+                col1, col2 = st.columns(2)
+                with col1:
+                    banco = st.text_input("Banco *", placeholder="Ex: Banco do Brasil")
+                    agencia = st.text_input("Agência *", placeholder="1234-5")
+                    conta = st.text_input("Conta *", placeholder="12345-6")
+                with col2:
+                    tipo_conta = st.selectbox("Tipo de Conta", ["Corrente", "Poupança", "Investimento"])
+                    nome_conta = st.text_input("Nome Amigável", placeholder="Ex: Conta Principal")
+                    saldo_inicial = st.number_input("Saldo Inicial (opcional)", value=0.0, step=100.0)
+
+                if st.form_submit_button("💾 Salvar Conta"):
+                    if banco and agencia and conta:
+                        nova_conta = ContaBancaria(
+                            banco=banco,
+                            agencia=agencia,
+                            conta=conta,
+                            tipo_conta=tipo_conta,
+                            nome_conta=nome_conta or f"{banco} - {conta}",
+                            saldo_atual=saldo_inicial
+                        )
+                        session.add(nova_conta)
+                        session.commit()
+                        st.success(f"✅ Conta {nome_conta or conta} cadastrada!")
+                        st.rerun()
                     else:
-                        st.warning("Nenhum item deste edital corresponde aos produtos do seu catálogo.")
-                
-                with col_b:
-                    if st.button("📄 Ver Arquivos do Edital", key=f"btn_arq_{lic.id}"):
-                        client = PNCPClient()
-                        # Reconstrói dict mínimo para buscar arquivos
-                        lic_dict = {
-                            "cnpj": lic.pncp_id.split('-')[0],
-                            "ano": lic.pncp_id.split('-')[1],
-                            "seq": lic.pncp_id.split('-')[2]
-                        }
-                        arquivos = client.buscar_arquivos(lic_dict)
-                        
-                        if arquivos:
-                            st.write("**Arquivos Disponíveis:**")
-                            for arq in arquivos:
-                                st.markdown(f"- [{arq['titulo']}]({arq['url']})")
+                        st.error("Preencha todos os campos obrigatórios!")
+
+        st.divider()
+
+        # Lista de contas
+        contas = session.query(ContaBancaria).all()
+        if contas:
+            for conta in contas:
+                status_icon = "✅" if conta.ativo else "❌"
+                st.markdown(f"""
+                <div class="css-card">
+                    <div class="card-title">{status_icon} {conta.nome_conta or conta.banco}</div>
+                    <div class="card-subtitle">{conta.banco} - Ag: {conta.agencia} | C/C: {conta.conta}</div>
+                    <div style="margin-top: 10px; font-size: 18px; font-weight: 600;">R$ {conta.saldo_atual:,.2f}</div>
+                </div>
+                """, unsafe_allow_html=True)
+
+                col_btn1, col_btn2, col_btn3 = st.columns([1, 1, 3])
+                with col_btn1:
+                    if st.button("🗑️ Excluir", key=f"del_conta_{conta.id}"):
+                        session.delete(conta)
+                        session.commit()
+                        st.rerun()
+                with col_btn2:
+                    novo_status = not conta.ativo
+                    label = "Ativar" if not conta.ativo else "Desativar"
+                    if st.button(label, key=f"toggle_{conta.id}"):
+                        conta.ativo = novo_status
+                        session.commit()
+                        st.rerun()
+        else:
+            st.warning("Nenhuma conta cadastrada ainda.")
+
+    # ==================== TAB 3: EXTRATOS ====================
+    with tab3:
+        st.subheader("📤 Upload de Extratos Bancários")
+
+        # Selecionar conta
+        contas_ativas = session.query(ContaBancaria).filter_by(ativo=True).all()
+        if not contas_ativas:
+            st.warning("Cadastre pelo menos uma conta bancária antes de importar extratos!")
+        else:
+            conta_selecionada = st.selectbox(
+                "Selecione a Conta",
+                contas_ativas,
+                format_func=lambda x: f"{x.nome_conta} ({x.banco})"
+            )
+
+            st.info("📁 Formatos aceitos: CSV, Excel (.xlsx, .xls), OFX")
+
+            uploaded_file = st.file_uploader("Selecione o arquivo de extrato", type=['csv', 'xlsx', 'xls', 'ofx'])
+
+            if uploaded_file:
+                try:
+                    parser = ExtratoParser()
+                    lancamentos = parser.parse_file(uploaded_file, uploaded_file.name, conta_selecionada.id)
+
+                    st.success(f"✅ Arquivo lido com sucesso! {len(lancamentos)} lançamentos encontrados.")
+
+                    # Preview
+                    st.write("### Pré-visualização dos Lançamentos")
+                    df_preview = pd.DataFrame(lancamentos)
+                    if not df_preview.empty:
+                        df_preview['valor'] = df_preview['valor'].apply(lambda x: f"R$ {x:,.2f}")
+                        st.dataframe(df_preview.head(20), use_container_width=True)
+
+                    # Erros?
+                    if parser.erros:
+                        with st.expander("⚠️ Avisos e Erros"):
+                            for erro in parser.erros:
+                                st.warning(erro)
+
+                    # Botão de importação
+                    if st.button("✅ Confirmar e Importar"):
+                        novos = 0
+                        duplicados = 0
+
+                        for lanc in lancamentos:
+                            # Verifica duplicata
+                            existe = session.query(ExtratoBancario).filter_by(
+                                hash_lancamento=lanc['hash_lancamento']
+                            ).first()
+
+                            if not existe:
+                                # Categoriza automaticamente
+                                lanc['categoria'] = parser.categorizar_lancamento(lanc['descricao'])
+
+                                extrato = ExtratoBancario(**lanc)
+                                session.add(extrato)
+                                novos += 1
+                            else:
+                                duplicados += 1
+
+                        session.commit()
+                        st.success(f"✅ Importação concluída! {novos} novos lançamentos, {duplicados} duplicados ignorados.")
+                        st.rerun()
+
+                except Exception as e:
+                    st.error(f"❌ Erro ao processar arquivo: {str(e)}")
+
+        st.divider()
+
+        # Lista de extratos
+        st.subheader("📋 Extratos Importados")
+
+        if contas_ativas:
+            conta_filtro = st.selectbox(
+                "Filtrar por Conta:",
+                [None] + contas_ativas,
+                format_func=lambda x: "Todas" if x is None else f"{x.nome_conta}"
+            )
+
+            query_extratos = session.query(ExtratoBancario)
+            if conta_filtro:
+                query_extratos = query_extratos.filter_by(conta_id=conta_filtro.id)
+
+            extratos = query_extratos.order_by(ExtratoBancario.data_lancamento.desc()).limit(100).all()
+
+            if extratos:
+                for extrato in extratos:
+                    conciliado_icon = "✅" if extrato.conciliado else "⏳"
+                    tipo_icon = "➕" if extrato.valor > 0 else "➖"
+                    cor = "green" if extrato.valor > 0 else "red"
+
+                    st.markdown(f"""
+                    <div style="padding: 8px; margin: 4px 0; border-left: 4px solid {cor}; background: #f8f9fa;">
+                        {conciliado_icon} {tipo_icon} <strong>R$ {abs(extrato.valor):,.2f}</strong> - {extrato.descricao[:60]}
+                        <br><small>{extrato.data_lancamento.strftime('%d/%m/%Y')} | {extrato.categoria or 'SEM CATEGORIA'}</small>
+                    </div>
+                    """, unsafe_allow_html=True)
+            else:
+                st.info("Nenhum extrato importado ainda.")
+
+    # ==================== TAB 4: FATURAS ====================
+    with tab4:
+        st.subheader("📄 Cadastro de Faturas")
+
+        # Formulário de nova fatura
+        with st.expander("➕ Adicionar Nova Fatura", expanded=False):
+            with st.form("form_nova_fatura"):
+                tipo = st.radio("Tipo", ["PAGAR", "RECEBER"], horizontal=True)
+
+                col1, col2 = st.columns(2)
+                with col1:
+                    fornecedor = st.text_input("Fornecedor/Cliente *", placeholder="Nome da empresa")
+                    descricao = st.text_input("Descrição *", placeholder="Ex: Nota Fiscal 1234")
+                    numero_nota = st.text_input("Número da Nota/Documento", placeholder="Opcional")
+                    valor = st.number_input("Valor Total *", min_value=0.01, step=10.0)
+                with col2:
+                    data_emissao = st.date_input("Data de Emissão", value=datetime.now())
+                    data_vencimento = st.date_input("Data de Vencimento *", value=datetime.now())
+                    forma_pagamento = st.selectbox("Forma de Pagamento",
+                                                    ["", "PIX", "TED", "DOC", "Boleto", "Cartão", "Dinheiro", "Cheque"])
+                    observacoes = st.text_area("Observações", placeholder="Detalhes adicionais...")
+
+                if st.form_submit_button("💾 Salvar Fatura"):
+                    if fornecedor and descricao and valor > 0:
+                        nova_fatura = Fatura(
+                            tipo=tipo,
+                            fornecedor_cliente=fornecedor,
+                            descricao=descricao,
+                            numero_nota=numero_nota,
+                            valor_original=valor,
+                            data_emissao=data_emissao,
+                            data_vencimento=data_vencimento,
+                            forma_pagamento=forma_pagamento,
+                            observacoes=observacoes
+                        )
+                        session.add(nova_fatura)
+                        session.commit()
+                        st.success(f"✅ Fatura cadastrada!")
+                        st.rerun()
+                    else:
+                        st.error("Preencha todos os campos obrigatórios!")
+
+        st.divider()
+
+        # Filtros
+        col_f1, col_f2, col_f3 = st.columns(3)
+        with col_f1:
+            filtro_tipo = st.selectbox("Tipo", ["TODOS", "PAGAR", "RECEBER"])
+        with col_f2:
+            filtro_status = st.selectbox("Status", ["TODOS", "PENDENTE", "PAGA", "VENCIDA", "PARCIAL"])
+        with col_f3:
+            filtro_busca = st.text_input("Buscar", placeholder="Fornecedor ou descrição...")
+
+        # Query
+        query_faturas = session.query(Fatura)
+
+        if filtro_tipo != "TODOS":
+            query_faturas = query_faturas.filter_by(tipo=filtro_tipo)
+
+        if filtro_status == "VENCIDA":
+            query_faturas = query_faturas.filter(
+                Fatura.status.in_(['PENDENTE', 'PARCIAL']),
+                Fatura.data_vencimento < datetime.now().date()
+            )
+        elif filtro_status != "TODOS":
+            query_faturas = query_faturas.filter_by(status=filtro_status)
+
+        if filtro_busca:
+            query_faturas = query_faturas.filter(
+                (Fatura.fornecedor_cliente.ilike(f"%{filtro_busca}%")) |
+                (Fatura.descricao.ilike(f"%{filtro_busca}%"))
+            )
+
+        faturas = query_faturas.order_by(Fatura.data_vencimento).all()
+
+        if faturas:
+            st.write(f"**Total: {len(faturas)} faturas**")
+
+            for fatura in faturas:
+                # Cor baseada no status
+                if fatura.status == "PAGA":
+                    cor = "green"
+                    icon = "✅"
+                elif fatura.esta_vencida:
+                    cor = "red"
+                    icon = "🔴"
+                else:
+                    cor = "orange"
+                    icon = "⏳"
+
+                st.markdown(f"""
+                <div class="css-card" style="border-left: 4px solid {cor};">
+                    <div class="card-title">{icon} {fatura.fornecedor_cliente}</div>
+                    <div class="card-subtitle">{fatura.descricao}</div>
+                    <div style="margin-top: 8px;">
+                        <strong>Valor:</strong> R$ {fatura.valor_original:,.2f} |
+                        <strong>Vencimento:</strong> {fatura.data_vencimento.strftime('%d/%m/%Y')} |
+                        <strong>Status:</strong> {fatura.status}
+                    </div>
+                </div>
+                """, unsafe_allow_html=True)
+
+                with st.expander("Ações"):
+                    col_a, col_b, col_c = st.columns(3)
+                    with col_a:
+                        if st.button("✏️ Editar", key=f"edit_fat_{fatura.id}"):
+                            st.info("Funcionalidade de edição em desenvolvimento...")
+                    with col_b:
+                        if st.button("🗑️ Excluir", key=f"del_fat_{fatura.id}"):
+                            session.delete(fatura)
+                            session.commit()
+                            st.rerun()
+                    with col_c:
+                        if fatura.status != "PAGA" and st.button("✅ Marcar como Paga", key=f"paga_{fatura.id}"):
+                            fatura.status = "PAGA"
+                            fatura.data_pagamento = datetime.now().date()
+                            fatura.valor_pago = fatura.valor_original
+                            session.commit()
+                            st.rerun()
+        else:
+            st.info("Nenhuma fatura encontrada com os filtros selecionados.")
+
+    # ==================== TAB 5: CONCILIAÇÃO ====================
+    with tab5:
+        st.subheader("🔍 Auditoria e Conciliação Bancária")
+        st.info("Sistema automático de matching entre extratos e faturas usando Inteligência Artificial.")
+
+        # Estatísticas rápidas
+        extratos_nao_conciliados = session.query(ExtratoBancario).filter_by(conciliado=False).all()
+        faturas_pendentes = session.query(Fatura).filter(Fatura.status.in_(['PENDENTE', 'PARCIAL'])).all()
+
+        col1, col2, col3 = st.columns(3)
+        with col1:
+            st.metric("Extratos Pendentes", len(extratos_nao_conciliados))
+        with col2:
+            st.metric("Faturas Pendentes", len(faturas_pendentes))
+        with col3:
+            conciliacoes_auto = session.query(Conciliacao).filter_by(tipo_match='AUTO').count()
+            st.metric("Conciliações Automáticas", conciliacoes_auto)
+
+        st.divider()
+
+        # Botão de conciliação automática
+        if st.button("🤖 Executar Conciliação Automática"):
+            with st.spinner("Processando matching automático..."):
+                conciliador = ConciliadorFinanceiro(session)
+                stats = conciliador.conciliar_automatico(extratos_nao_conciliados, faturas_pendentes)
+
+                st.success("✅ Conciliação concluída!")
+
+                col_s1, col_s2, col_s3 = st.columns(3)
+                with col_s1:
+                    st.metric("Conciliados", stats['conciliados'])
+                with col_s2:
+                    st.metric("Sugestões", stats['sugestoes'])
+                with col_s3:
+                    st.metric("Sem Match", stats['sem_match'])
+
+                st.rerun()
+
+        st.divider()
+
+        # Conciliação Manual
+        st.markdown("### 🔧 Conciliação Manual")
+
+        if extratos_nao_conciliados and faturas_pendentes:
+            # Seleção de extrato
+            extrato_selecionado = st.selectbox(
+                "Selecione um Extrato:",
+                extratos_nao_conciliados,
+                format_func=lambda x: f"{x.data_lancamento.strftime('%d/%m/%Y')} - R$ {abs(x.valor):,.2f} - {x.descricao[:50]}"
+            )
+
+            if extrato_selecionado:
+                # Busca sugestões
+                conciliador = ConciliadorFinanceiro(session)
+                matches = conciliador.buscar_matches(extrato_selecionado, faturas_pendentes, modo='sugestao')
+
+                if matches:
+                    st.write(f"**{len(matches)} sugestões encontradas:**")
+
+                    for match in matches[:5]:  # Top 5
+                        fatura = match['fatura']
+                        score = match['score']
+
+                        # Cor baseada no score
+                        if score >= 85:
+                            cor = "green"
+                        elif score >= 70:
+                            cor = "orange"
                         else:
-                            st.info("Nenhum arquivo encontrado.")
-                            
-                    st.divider()
-                    st.markdown("### 🧠 Inteligência Artificial")
-                    
-                    # Seletor de Item para Estimativa
-                    item_opts = {f"{i.numero_item} - {i.descricao[:50]}...": i.descricao for i in lic.itens}
-                    selected_item_label = st.selectbox("Selecione um item para estimar preço de mercado:", list(item_opts.keys()), key=f"sel_item_{lic.id}")
-                    
-                    if st.button("💰 Estimar Preço de Mercado (Google/IA)", key=f"btn_price_{lic.id}"):
-                        item_desc = item_opts[selected_item_label]
-                        with st.spinner(f"Pesquisando preço de mercado para: {item_desc[:30]}..."):
-                            estimate = get_google_price_estimate(item_desc)
-                            st.info(f"**Estimativa de Preço:** {estimate}")
-                            st.caption("Nota: Esta é uma estimativa baseada em IA e dados históricos. Sempre verifique fornecedores reais.")
-                            
-                    # Botão de IA
-                    if st.button("✨ Gerar Resumo IA", key=f"btn_ai_{lic.id}"):
-                        session = get_session()
-                        api_key = session.query(Configuracao).filter_by(chave='gemini_api_key').first()
-                        session.close()
-                        
-                        if api_key and api_key.valor:
-                            configure_genai(api_key.valor)
-                            with st.spinner("A IA está analisando o edital..."):
-                                resumo = summarize_bidding(lic, lic.itens)
-                                st.markdown("### 🤖 Análise da IA")
-                                st.markdown(resumo)
-                        else:
-                            st.error("Configure a API Key do Gemini na aba Configurações primeiro!")
-                            
-                    # Botão de Estimativa de Preço (Novo)
-                    if st.button("💰 Estimar Preços de Mercado (IA)", key=f"btn_price_all_{lic.id}"):
-                        session = get_session()
-                        api_key = session.query(Configuracao).filter_by(chave='gemini_api_key').first()
-                        session.close()
-                        
-                        if api_key and api_key.valor:
-                            configure_genai(api_key.valor)
-                            st.write("### 💰 Estimativas de Mercado (IA)")
-                            
-                            # Estima apenas para os primeiros 5 itens para não demorar muito
-                            itens_para_estimar = lic.itens[:5]
-                            
-                            for item in itens_para_estimar:
-                                with st.spinner(f"Estimando: {item.descricao[:30]}..."):
-                                    estimativa = estimate_market_price(item.descricao)
-                                    st.markdown(f"**{item.descricao}**: {estimativa}")
-                            
-                            if len(lic.itens) > 5:
-                                st.info("Estimativa limitada aos 5 primeiros itens para economizar tempo.")
-                        else:
-                            st.error("Configure a API Key do Gemini na aba Configurações primeiro!")
+                            cor = "gray"
+
+                        st.markdown(f"""
+                        <div style="padding: 12px; margin: 8px 0; border-left: 5px solid {cor}; background: #f8f9fa;">
+                            <strong>Score: {score}%</strong> - {fatura.fornecedor_cliente} | R$ {fatura.valor_original:,.2f}
+                            <br><small>{fatura.descricao} | Vencimento: {fatura.data_vencimento.strftime('%d/%m/%Y')}</small>
+                            <br><small style="color: #666;">{match['detalhes']}</small>
+                        </div>
+                        """, unsafe_allow_html=True)
+
+                        if st.button(f"✅ Conciliar", key=f"conc_{extrato_selecionado.id}_{fatura.id}"):
+                            if conciliador.criar_conciliacao_manual(
+                                extrato_selecionado.id,
+                                fatura.id,
+                                abs(extrato_selecionado.valor),
+                                f"Match manual - Score: {score}%"
+                            ):
+                                st.success("Conciliação realizada!")
+                                st.rerun()
+                            else:
+                                st.error("Erro ao conciliar.")
+                else:
+                    st.warning("Nenhuma sugestão encontrada para este extrato.")
+        else:
+            st.info("Não há extratos ou faturas pendentes para conciliar.")
+
+        st.divider()
+
+        # Histórico de conciliações
+        st.markdown("### 📜 Histórico de Conciliações")
+        conciliacoes = session.query(Conciliacao).order_by(Conciliacao.data_conciliacao.desc()).limit(20).all()
+
+        if conciliacoes:
+            for conc in conciliacoes:
+                tipo_icon = "🤖" if conc.tipo_match == "AUTO" else "👤"
+                st.markdown(f"""
+                <div style="padding: 8px; margin: 4px 0; background: #e8f5e9;">
+                    {tipo_icon} R$ {conc.valor_conciliado:,.2f} -
+                    <strong>{conc.fatura.fornecedor_cliente}</strong> ↔ {conc.extrato.descricao[:40]}
+                    <br><small>{conc.data_conciliacao.strftime('%d/%m/%Y %H:%M')} | Score: {conc.score_match:.0f}%</small>
+                </div>
+                """, unsafe_allow_html=True)
+
+                if st.button("↩️ Desfazer", key=f"undo_{conc.id}"):
+                    conciliador = ConciliadorFinanceiro(session)
+                    if conciliador.desfazer_conciliacao(conc.id):
+                        st.success("Conciliação desfeita!")
+                        st.rerun()
+        else:
+            st.info("Nenhuma conciliação realizada ainda.")
+
+    session.close()
 
 elif page == "Configurações":
     st.header("⚙️ Configurações do Sistema")
@@ -833,10 +1490,36 @@ elif page == "Configurações":
             st.success("API Key salva com sucesso!")
             
         st.divider()
+
+        # --- Perfil da Empresa ---
+        st.subheader("🏢 Perfil da Empresa (para Elegibilidade)")
+        eligibility = EligibilityChecker()
+        profile = eligibility.get_company_profile()
         
-
+        with st.form("form_perfil"):
+            razao_social = st.text_input("Razão Social", value=profile.get('razao_social', ''))
+            cnpj = st.text_input("CNPJ", value=profile.get('cnpj', ''))
+            porte = st.selectbox("Porte da Empresa", ["ME", "EPP", "Grande Porte"], index=["ME", "EPP", "Grande Porte"].index(profile.get('porte', 'ME')))
             
+            # Estados de Atuação
+            all_ufs = ['AC', 'AL', 'AP', 'AM', 'BA', 'CE', 'DF', 'ES', 'GO', 'MA', 'MT', 'MS', 'MG', 'PA', 'PB', 'PR', 'PE', 'PI', 'RJ', 'RN', 'RS', 'RO', 'RR', 'SC', 'SP', 'SE', 'TO']
+            default_ufs = profile.get('estados_atuacao', ['RN', 'PB', 'PE', 'AL'])
+            estados_atuacao = st.multiselect("Estados de Atuação", all_ufs, default=default_ufs)
+            
+            cnaes = st.text_area("CNAEs (separados por vírgula)", value=profile.get('cnaes', ''))
+            
+            if st.form_submit_button("Salvar Perfil"):
+                new_profile = {
+                    "razao_social": razao_social,
+                    "cnpj": cnpj,
+                    "porte": porte,
+                    "estados_atuacao": estados_atuacao,
+                    "cnaes": cnaes
+                }
+                eligibility.save_company_profile(new_profile)
+                st.success("Perfil atualizado com sucesso!")
 
+        st.divider()
         
         # --- Seção 2: Importador CNAE ---
         st.subheader("🏭 Gerador de Keywords via CNAE")
@@ -845,7 +1528,7 @@ elif page == "Configurações":
         cnae_input = st.text_input("Código CNAE (ex: 4645-1/01)", placeholder="0000-0/00")
         
         if st.button("Gerar e Adicionar Termos"):
-            from cnae_data import get_keywords_by_cnae
+            # from cnae_data import get_keywords_by_cnae (Already imported at top)
             
             keywords_cnae = get_keywords_by_cnae(cnae_input)
             
@@ -922,8 +1605,8 @@ elif page == "📥 Importar & Relatórios":
     st.header("📥 Central de Importação e Relatórios")
     st.info("Importe planilhas do ConLicitação, Portal de Compras Públicas ou qualquer Excel/CSV para analisar automaticamente.")
     
-    from importer import load_data, smart_map_columns, normalize_imported_data
-    from database import Produto
+    from modules.utils.importer import load_data, smart_map_columns, normalize_imported_data
+    # Produto already imported at top level
     
     uploaded_file = st.file_uploader("Carregar Arquivo (Excel ou CSV)", type=['xlsx', 'xls', 'csv'])
     
@@ -1001,23 +1684,15 @@ elif page == "📥 Importar & Relatórios":
                     # Formatação para exibição
                     st.dataframe(
                         df_matches.style.format({
-                            "Valor Edital (Unit)": "R$ {:.2f}",
-                            "Meu Custo": "R$ {:.2f}",
-                            "Lucro Potencial": "R$ {:.2f}",
+                            "Valor Edital (Unit)": "R$ {:,.2f}",
+                            "Meu Custo": "R$ {:,.2f}",
+                            "Lucro Potencial": "R$ {:,.2f}",
                             "Margem (%)": "{:.1f}%"
-                        })
+                        }),
+                        use_container_width=True
                     )
                     
-                    # Botão de Exportar Relatório
-                    # CSV por enquanto para ser rápido, Excel requer mais libs/io bytes
-                    csv = df_matches.to_csv(index=False).encode('utf-8')
-                    st.download_button(
-                        label="📥 Baixar Relatório (CSV)",
-                        data=csv,
-                        file_name='relatorio_oportunidades.csv',
-                        mime='text/csv',
-                    )
+                    # Botão para Exportar
+                    # (Poderíamos adicionar aqui exportação para Excel)
                 else:
-                    st.warning("Nenhum item da planilha correspondeu aos produtos do seu catálogo.")
-        else:
-            st.error("Formato de arquivo não suportado ou arquivo vazio.")
+                    st.warning("Nenhum match encontrado com seu catálogo.")
