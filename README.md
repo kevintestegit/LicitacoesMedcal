@@ -2,7 +2,7 @@
 Sistema de busca de licitações - Medcal FARMA
 
 ## O que a Medcal concorre
-- Modalidades: Pregão Eletrônico (6) e Dispensa de Licitação/Compra Direta (8).
+- Modalidades: Pregão Eletrônico (6), Dispensa de Licitação/Compra Direta (8) e Dispensa Emergencial (12).
 - Escopo: locação/comodato de equipamentos de análises clínicas (hematologia, bioquímica, coagulação, imunologia, ionograma, hormônios, gasometria/POCT) com fornecimento de reagentes e insumos; consumíveis laboratoriais (luvas, máscaras, tubos/coleta); manutenção preventiva associada aos equipamentos fornecidos.
 - Não concorre: material odontológico, planos/serviços de saúde, obras/engenharia, TI genérica, vigilância/limpeza, viagens, veículos, combustíveis, construção civil, merenda, inexigibilidade (já tem fornecedor definido) etc.
 

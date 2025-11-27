@@ -96,21 +96,18 @@ class DiarioMunicipalScraper(ExternalScraper):
     def buscar_oportunidades(self, termos_busca=None, termos_negativos=None):
         """
         Baixa o PDF do dia e busca por termos chave.
+        Gate: exige licitacao aberta (aviso/pregao/dispensa/edital) antes de termos positivos/negativos.
         """
         resultados = []
         try:
             headers = {
                 "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36"
             }
-            
-            # 1. Fetch Homepage
             response = requests.get(self.BASE_URL, headers=headers, timeout=15, verify=False)
             response.raise_for_status()
             soup = BeautifulSoup(response.text, 'html.parser')
-            
-            # 2. Find PDF Link
+
             pdf_url = self._get_pdf_url(soup)
-            
             if not pdf_url:
                 return [{
                     "pncp_id": f"{self.ORIGEM}-ERROR",
@@ -119,41 +116,32 @@ class DiarioMunicipalScraper(ExternalScraper):
                     "modalidade": "Erro",
                     "data_sessao": datetime.now().isoformat(),
                     "data_publicacao": datetime.now().isoformat(),
-                    "objeto": "Não foi possível encontrar o link do PDF do dia.",
+                    "objeto": "Nao foi possivel encontrar o link do PDF do dia.",
                     "link": self.BASE_URL,
                     "itens": [],
                     "origem": self.ORIGEM
                 }]
 
-            # 3. Download PDF
             pdf_response = requests.get(pdf_url, headers=headers, timeout=60, verify=False)
             pdf_response.raise_for_status()
-            
-            # 4. Read PDF
+
             f = io.BytesIO(pdf_response.content)
             reader = PdfReader(f)
-            text = ""
-            for page in reader.pages:
-                text += page.extract_text() + "\n"
-            
-            # Helper to normalize text (remove accents)
-            def normalize_text(text):
-                if not text: return ""
-                return unicodedata.normalize('NFKD', text).encode('ASCII', 'ignore').decode('ASCII').upper()
+            text = "".join(((page.extract_text() or "") + "\n") for page in reader.pages)
+
+            def normalize_text(txt: str) -> str:
+                if not txt:
+                    return ""
+                return unicodedata.normalize('NFKD', txt).encode('ASCII', 'ignore').decode('ASCII').upper()
 
             text_normalized = normalize_text(text)
-            
-            # 5. Search Terms & Extract Notices
-            if termos_busca is None:
-                termos_busca = PNCPClient.TERMOS_PRIORITARIOS
-            
-            terms_to_search_norm = [normalize_text(t) for t in termos_busca if t and t.strip()]
-            
-            terms_negativos_norm = []
-            if termos_negativos:
-                terms_negativos_norm = [normalize_text(t) for t in termos_negativos]
 
-            # Compile Regex Patterns
+            if termos_busca is None:
+                termos_busca = PNCPClient.TERMOS_PRIORITARIOS  # foco estrito
+
+            terms_to_search_norm = [normalize_text(t) for t in termos_busca if t and t.strip()]
+            terms_negativos_norm = [normalize_text(t) for t in termos_negativos] if termos_negativos else []
+
             positive_pattern = None
             if terms_to_search_norm:
                 terms_to_search_norm.sort(key=len, reverse=True)
@@ -164,180 +152,150 @@ class DiarioMunicipalScraper(ExternalScraper):
                 terms_negativos_norm.sort(key=len, reverse=True)
                 negative_pattern = re.compile(r'\b(?:' + '|'.join(map(re.escape, terms_negativos_norm)) + r')\b')
 
-            # Split text into "notices" using "Código Identificador:" as delimiter
-            chunks = re.split(r'(Código Identificador:\s*[\w\d]+)', text)
-            
+            termos_licitacao_valida = [
+                "AVISO DE LICITACAO",
+                "PREGAO ELETRONICO", "PREGAO PRESENCIAL",
+                "DISPENSA DE LICITACAO", "DISPENSA ELETRONICA",
+                "TOMADA DE PRECO", "TOMADA DE PRECOS",
+                "CONCORRENCIA PUBLICA",
+                "CHAMAMENTO PUBLICO", "CHAMADA PUBLICA",
+                "EDITAL DE LICITACAO",
+                "PROCESSO LICITATORIO"
+            ]
+
+            def eh_licitacao_aberta(txt_norm: str) -> bool:
+                return any(t in txt_norm for t in termos_licitacao_valida)
+
+            chunks = re.split(r'(CODIGO IDENTIFICADOR:\s*[\w\d]+)', text_normalized)
+
             if len(chunks) < 2:
-                # Use Regex Search on normalized text (Full Text Fallback)
-                if positive_pattern and positive_pattern.search(text_normalized):
-                     if not (negative_pattern and negative_pattern.search(text_normalized)):
-                        resultados.append({
-                            "pncp_id": f"{self.ORIGEM}-{datetime.now().strftime('%Y%m%d')}-FULL",
-                            "orgao": f"Municípios {self.UF} ({self.ORIGEM})",
-                            "uf": self.UF,
-                            "modalidade": "Diário Oficial",
-                            "data_sessao": datetime.now().isoformat(),
-                            "data_publicacao": datetime.now().isoformat(),
-                            "objeto": text[:5000] + "... (Texto muito longo, verifique o PDF)",
-                            "link": pdf_url,
-                            "itens": [],
-                            "origem": self.ORIGEM
-                        })
+                if eh_licitacao_aberta(text_normalized):
+                    if positive_pattern and positive_pattern.search(text_normalized):
+                        if not (negative_pattern and negative_pattern.search(text_normalized)):
+                            resultados.append({
+                                "pncp_id": f"{self.ORIGEM}-{datetime.now().strftime('%Y%m%d')}-FULL",
+                                "orgao": f"Municipios {self.UF} ({self.ORIGEM})",
+                                "uf": self.UF,
+                                "modalidade": "Diario Oficial",
+                                "data_sessao": datetime.now().isoformat(),
+                                "data_publicacao": datetime.now().isoformat(),
+                                "objeto": text[:5000] + "... (Texto muito longo, verifique o PDF)",
+                                "link": pdf_url,
+                                "itens": [],
+                                "origem": self.ORIGEM
+                            })
             else:
-                # Reconstruct notices
                 for i in range(0, len(chunks)-1, 2):
                     body = chunks[i]
                     code = chunks[i+1]
-                    full_notice = body + "\n" + code
-                    full_notice_clean = re.sub(r'\n+', '\n', full_notice).strip()
+                    full_notice_clean = re.sub(r'\n+', '\n', body + "\n" + code).strip()
                     full_notice_norm = normalize_text(full_notice_clean)
-                    
-                    if positive_pattern and positive_pattern.search(full_notice_norm):
-                        if negative_pattern and negative_pattern.search(full_notice_norm):
-                            continue
 
-                        code_match = re.search(r'Código Identificador:\s*([\w\d]+)', code)
-                        code_id = code_match.group(1) if code_match else f"UNK-{i}"
-                        
-                        # Extract Orgao (Heuristic)
-                        orgao_name = f"Município {self.UF} ({self.ORIGEM})"
-                        patterns_orgao = [
-                            r'(PREFEITURA MUNICIPAL (?:DE|DA|DO) [^\n]+)',
-                            r'(CÂMARA MUNICIPAL (?:DE|DA|DO) [^\n]+)',
-                            r'(CAMARA MUNICIPAL (?:DE|DA|DO) [^\n]+)',
-                            r'(FUNDO MUNICIPAL (?:DE|DA|DO) [^\n]+)',
-                            r'(CONSÓRCIO INTERMUNICIPAL [^\n]+)',
-                            r'(CONSORCIO INTERMUNICIPAL [^\n]+)',
-                            r'(SERVIÇO AUTÔNOMO [^\n]+)'
-                        ]
-                        
-                        for pat in patterns_orgao:
-                            match = re.search(pat, full_notice_clean, re.IGNORECASE)
-                            if match:
-                                orgao_name = match.group(1).strip()
-                                break
+                    if not eh_licitacao_aberta(full_notice_norm):
+                        continue
+                    if positive_pattern and not positive_pattern.search(full_notice_norm):
+                        continue
+                    if negative_pattern and negative_pattern.search(full_notice_norm):
+                        continue
 
-                        # Extract Modalidade (Heuristic)
-                        if "INEXIGIBILIDADE" in full_notice_norm: 
-                            continue # Ignora Inexigibilidade
+                    code_match = re.search(r'CODIGO IDENTIFICADOR:\s*([\w\d]+)', full_notice_norm)
+                    code_id = code_match.group(1) if code_match else f"UNK-{i}"
 
-                        modalidade = "Diário Oficial"
-                        if "DISPENSA" in full_notice_norm: modalidade = "Dispensa"
-                        elif "PREGAO" in full_notice_norm: modalidade = "Pregão"
-                        elif "CONCORRENCIA" in full_notice_norm: modalidade = "Concorrência"
-                        elif "TOMADA DE PRECO" in full_notice_norm: modalidade = "Tomada de Preço"
-                        elif "CHAMADA PUBLICA" in full_notice_norm: modalidade = "Chamada Pública"
-                        elif "AVISO DE LICITACAO" in full_notice_norm: modalidade = "Aviso de Licitação"
-                        elif "EXTRATO" in full_notice_norm: modalidade = "Extrato/Contrato"
+                    orgao_name = f"Municipio {self.UF} ({self.ORIGEM})"
+                    patterns_orgao = [
+                        r'(PREFEITURA MUNICIPAL (?:DE|DA|DO) [^\n]+)',
+                        r'(CAMARA MUNICIPAL (?:DE|DA|DO) [^\n]+)',
+                        r'(FUNDO MUNICIPAL (?:DE|DA|DO) [^\n]+)',
+                        r'(CONSORCIO INTERMUNICIPAL [^\n]+)',
+                        r'(SERVICO AUTONOMO [^\n]+)'
+                    ]
+                    for pat in patterns_orgao:
+                        match = re.search(pat, full_notice_clean, re.IGNORECASE)
+                        if match:
+                            orgao_name = match.group(1).strip()
+                            break
 
-                        # ============================================================
-                        # FILTRO RIGOROSO: Só aceita documentos de LICITAÇÃO ABERTA
-                        # ============================================================
-                        
-                        # Termos que indicam LICITAÇÃO ABERTA (deve ter pelo menos um)
-                        termos_licitacao_valida = [
-                            "AVISO DE LICITACAO", "AVISO DE LICITAÇÃO",
-                            "PREGAO ELETRONICO", "PREGÃO ELETRÔNICO", "PREGAO PRESENCIAL", "PREGÃO PRESENCIAL",
-                            "DISPENSA DE LICITACAO", "DISPENSA DE LICITAÇÃO", "DISPENSA ELETRONICA", "DISPENSA ELETRÔNICA",
-                            "TOMADA DE PRECO", "TOMADA DE PREÇO", "TOMADA DE PREÇOS",
-                            "CONCORRENCIA PUBLICA", "CONCORRÊNCIA PÚBLICA",
-                            "CHAMAMENTO PUBLICO", "CHAMAMENTO PÚBLICO",
-                            "CHAMADA PUBLICA", "CHAMADA PÚBLICA",
-                            "EDITAL DE LICITACAO", "EDITAL DE LICITAÇÃO",
-                            "PROCESSO LICITATORIO", "PROCESSO LICITATÓRIO"
-                        ]
-                        
-                        # Verifica se é uma licitação válida
-                        eh_licitacao_valida = any(termo in full_notice_norm for termo in termos_licitacao_valida)
-                        
-                        if not eh_licitacao_valida:
-                            continue  # Pula documentos que não são licitações abertas
-                        
-                        # Termos que indicam documentos NÃO desejados (mesmo que tenham termos positivos)
-                        termos_documento_invalido = [
-                            "NOTIFICACAO", "NOTIFICAÇÃO",
-                            "ATRASO NA ENTREGA", "ATRASO DE ENTREGA",
-                            "PENALIDADE", "PENALIDADES", "MULTA", "ADVERTENCIA", "ADVERTÊNCIA",
-                            "RESCISAO", "RESCISÃO", "RESCISAO DE CONTRATO", "RESCISÃO DE CONTRATO",
-                            "EXTRATO DE CONTRATO", "EXTRATO DO CONTRATO",
-                            "EXTRATO DE TERMO ADITIVO", "TERMO ADITIVO",
-                            "RATIFICACAO", "RATIFICAÇÃO", "HOMOLOGACAO", "HOMOLOGAÇÃO",
-                            "ADJUDICACAO", "ADJUDICAÇÃO",
-                            "RESULTADO DE JULGAMENTO", "RESULTADO DO JULGAMENTO",
-                            "ATA DE REGISTRO DE PRECO", "ATA DE REGISTRO DE PREÇO",
-                            "PUBLICACAO DE ATA", "PUBLICAÇÃO DE ATA",
-                            "ERRATA", "RETIFICACAO", "RETIFICAÇÃO",
-                            "CONVOCACAO PARA ASSINATURA", "CONVOCAÇÃO PARA ASSINATURA",
-                            "ORDEM DE FORNECIMENTO", "ORDEM DE SERVICO", "ORDEM DE SERVIÇO",
-                            "DESPACHO", "PARECER", "PORTARIA"
-                        ]
-                        
-                        # Se contém termo de documento inválido, pula
-                        tem_termo_invalido = any(termo in full_notice_norm for termo in termos_documento_invalido)
-                        
-                        if tem_termo_invalido:
-                            continue  # Pula notificações, extratos, aditivos, etc.
+                    if "INEXIGIBILIDADE" in full_notice_norm:
+                        continue
 
-                        # FILTRO ADICIONAL: Detecta contratos já assinados (com contratado)
-                        # Padrões que indicam que já tem vencedor/contratado
-                        skip_patterns = [
-                            r'CONTRATAD[OA]\s*:\s*[A-Z]',  # "Contratado: NOME" ou "Contratada: NOME"
-                            r'CONTRATAD[OA]\s*\([Aa]\)\s*:\s*[A-Z]',  # "Contratado (a): NOME"
-                            r'VENCEDOR\s*:\s*[A-Z]',  # "Vencedor: NOME"
-                            r'EMPRESA\s+VENCEDORA\s*:\s*[A-Z]',  # "Empresa Vencedora: NOME"
-                        ]
+                    modalidade = "Diario Oficial"
+                    if "DISPENSA" in full_notice_norm:
+                        modalidade = "Dispensa"
+                    elif "PREGAO" in full_notice_norm:
+                        modalidade = "Pregao"
+                    elif "CONCORRENCIA" in full_notice_norm:
+                        modalidade = "Concorrencia"
+                    elif "TOMADA DE PRECO" in full_notice_norm:
+                        modalidade = "Tomada de Preco"
+                    elif "CHAMADA PUBLICA" in full_notice_norm:
+                        modalidade = "Chamada Publica"
+                    elif "AVISO DE LICITACAO" in full_notice_norm:
+                        modalidade = "Aviso de Licitacao"
+                    elif "EXTRATO" in full_notice_norm:
+                        modalidade = "Extrato/Contrato"
 
-                        should_skip = False
-                        for skip_pat in skip_patterns:
-                            if re.search(skip_pat, full_notice_clean, re.IGNORECASE):
-                                should_skip = True
-                                break
+                    termos_documento_invalido = [
+                        "NOTIFICACAO",
+                        "ATRASO NA ENTREGA", "ATRASO DE ENTREGA",
+                        "PENALIDADE", "PENALIDADES", "MULTA", "ADVERTENCIA",
+                        "RESCISAO", "RESCISAO DE CONTRATO",
+                        "EXTRATO DE CONTRATO", "EXTRATO DO CONTRATO",
+                        "EXTRATO DE TERMO ADITIVO", "TERMO ADITIVO",
+                        "RATIFICACAO", "HOMOLOGACAO",
+                        "ADJUDICACAO",
+                        "RESULTADO DE JULGAMENTO",
+                        "ATA DE REGISTRO DE PRECO",
+                        "PUBLICACAO DE ATA",
+                        "ERRATA", "RETIFICACAO",
+                        "CONVOCACAO PARA ASSINATURA",
+                        "ORDEM DE FORNECIMENTO", "ORDEM DE SERVICO",
+                        "DESPACHO", "PARECER", "PORTARIA"
+                    ]
+                    if any(termo in full_notice_norm for termo in termos_documento_invalido):
+                        continue
 
-                        if should_skip:
-                            continue  # Pula este aviso, já tem contratado
-                        
-                        # === IA ENRICHMENT ===
-                        # Usa Gemini para estruturar o aviso (itens e objeto limpo)
-                        ai_data = self._enrich_with_ai(full_notice_clean)
-                        
-                        objeto_final = full_notice_clean
-                        itens_final = []
-                        
-                        if ai_data:
-                            if ai_data.get('objeto_resumido'):
-                                objeto_final = ai_data['objeto_resumido'] + "\n\n[IA] Texto Original Resumido."
-                            
-                            if ai_data.get('itens'):
-                                for it in ai_data['itens']:
-                                    itens_final.append({
-                                        "numero": 0, 
-                                        "descricao": it.get('descricao', 'Item sem nome'),
-                                        "quantidade": it.get('quantidade', 1.0),
-                                        "unidade": it.get('unidade', 'UN'),
-                                        "valor_estimado": it.get('valor_estimado', 0.0),
-                                        "valor_unitario": it.get('valor_unitario', 0.0)
-                                    })
+                    skip_patterns = [
+                        r'CONTRATAD[OA]\s*:\s*[A-Z]',
+                        r'CONTRATAD[OA]\s*\([Aa]\)\s*:\s*[A-Z]',
+                        r'VENCEDOR\s*:\s*[A-Z]',
+                        r'EMPRESA\s+VENCEDORA\s*:\s*[A-Z]',
+                    ]
+                    if any(re.search(pat, full_notice_clean, re.IGNORECASE) for pat in skip_patterns):
+                        continue
 
-                        resultados.append({
-                            "pncp_id": f"{self.ORIGEM}-{datetime.now().strftime('%Y%m%d')}-{code_id}",
-                            "orgao": orgao_name,
-                            "uf": self.UF,
-                            "modalidade": f"{modalidade} ({self.ORIGEM})",
-                            "data_sessao": datetime.now().isoformat(),
-                            "data_publicacao": datetime.now().isoformat(),
-                            "objeto": objeto_final,
-                            "link": pdf_url,
-                            "itens": itens_final, # Agora populado pela IA!
-                            "origem": self.ORIGEM
-                        })
-            
-            # Se não encontrou nada relevante, retorna lista vazia (não cria registro de debug)
-            # O usuário será informado no dashboard que "0 resultados foram encontrados"
+                    ai_data = self._enrich_with_ai(full_notice_clean)
+                    objeto_final = full_notice_clean
+                    itens_final = []
+
+                    if ai_data:
+                        if ai_data.get('objeto_resumido'):
+                            objeto_final = ai_data['objeto_resumido'] + "\n\n[IA] Texto Original Resumido."
+                        if ai_data.get('itens'):
+                            for it in ai_data['itens']:
+                                itens_final.append({
+                                    "numero": 0,
+                                    "descricao": it.get('descricao', 'Item sem nome'),
+                                    "quantidade": it.get('quantidade', 1.0),
+                                    "unidade": it.get('unidade', 'UN'),
+                                    "valor_estimado": it.get('valor_estimado', 0.0),
+                                    "valor_unitario": it.get('valor_unitario', 0.0)
+                                })
+
+                    resultados.append({
+                        "pncp_id": f"{self.ORIGEM}-{datetime.now().strftime('%Y%m%d')}-{code_id}",
+                        "orgao": orgao_name,
+                        "uf": self.UF,
+                        "modalidade": f"{modalidade} ({self.ORIGEM})",
+                        "data_sessao": datetime.now().isoformat(),
+                        "data_publicacao": datetime.now().isoformat(),
+                        "objeto": objeto_final,
+                        "link": pdf_url,
+                        "itens": itens_final,
+                        "origem": self.ORIGEM
+                    })
 
         except Exception as e:
-            # Log do erro mas não cria registro falso
-            print(f"⚠️ Erro ao processar PDF do {self.ORIGEM}: {str(e)}")
-            
+            print(f"[WARN] Erro ao processar PDF do {self.ORIGEM}: {str(e)}")
         return resultados
 
 class FemurnScraper(DiarioMunicipalScraper):

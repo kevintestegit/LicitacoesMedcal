@@ -6,15 +6,25 @@ Execute: python scripts/restore_catalogo.py
 
 import sys
 import os
+import io
+
+# Configura encoding UTF-8 para Windows
+if sys.platform == "win32":
+    sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8')
+    sys.stderr = io.TextIOWrapper(sys.stderr.buffer, encoding='utf-8')
 
 # Adiciona o diretório raiz ao path
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from modules.database.database import get_session, Produto, init_db
 
-def restaurar_catalogo():
-    """Restaura o catálogo de produtos padrão da Medcal."""
-    
+def restaurar_catalogo(auto_substituir=False):
+    """Restaura o catálogo de produtos padrão da Medcal.
+
+    Args:
+        auto_substituir: Se True, substitui automaticamente sem perguntar
+    """
+
     # Inicializa o banco
     init_db()
     session = get_session()
@@ -324,15 +334,22 @@ def restaurar_catalogo():
     
     # Pergunta se quer limpar ou adicionar
     produtos_existentes = session.query(Produto).count()
-    
+
     if produtos_existentes > 0:
         print(f"⚠️  Existem {produtos_existentes} produtos no banco.")
-        resposta = input("Deseja SUBSTITUIR todos? (s/N): ").strip().lower()
-        if resposta == 's':
+        if auto_substituir:
             session.query(Produto).delete()
-            print("🗑️  Produtos anteriores removidos.")
+            print("🗑️  Produtos anteriores removidos (modo automático).")
         else:
-            print("➕ Adicionando aos produtos existentes...")
+            try:
+                resposta = input("Deseja SUBSTITUIR todos? (s/N): ").strip().lower()
+                if resposta == 's':
+                    session.query(Produto).delete()
+                    print("🗑️  Produtos anteriores removidos.")
+                else:
+                    print("➕ Adicionando aos produtos existentes...")
+            except EOFError:
+                print("➕ Adicionando aos produtos existentes (modo não-interativo)...")
     
     # Adiciona os produtos
     for p in produtos:
@@ -358,10 +375,18 @@ def restaurar_catalogo():
     session.close()
 
 if __name__ == "__main__":
+    import argparse
+
+    parser = argparse.ArgumentParser(description="Restaura o catálogo de produtos da Medcal")
+    parser.add_argument("--substituir", "-s", action="store_true",
+                        help="Substitui automaticamente produtos existentes sem perguntar")
+
+    args = parser.parse_args()
+
     print("=" * 50)
     print("🔄 RESTAURAÇÃO DO CATÁLOGO MEDCAL")
     print("=" * 50)
     print()
-    restaurar_catalogo()
+    restaurar_catalogo(auto_substituir=args.substituir)
     print()
     print("=" * 50)

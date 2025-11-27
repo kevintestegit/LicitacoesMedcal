@@ -205,7 +205,7 @@ with st.sidebar:
     
     st.markdown("""
         <div style="text-align: center; padding: 16px 0; margin-top: auto;">
-            <div style="font-size: 9px; color: rgba(255,255,255,0.3);">v2.0 • 2025</div>
+            <div style="font-size: 10px; color: rgba(255,255,255,0.3);">v2.0 • 2025</div>
         </div>
     """, unsafe_allow_html=True)
 

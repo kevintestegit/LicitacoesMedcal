@@ -1,0 +1,278 @@
+[
+  {
+    "nome": "Equipamento automatizado",
+    "palavras_chave": "EQUIPAMENTO AUTOMATIZADO, ANALISADOR AUTOMATIZADO, SISTEMA AUTOMATIZADO, AUTOMACAO LABORATORIAL",
+    "preco_custo": 0.0,
+    "margem_minima": 0.0
+  },
+  {
+    "nome": "Analisador Hematológico Automatizado",
+    "palavras_chave": "HEMATOLOGIA, ANALISADOR HEMATOLOGICO, ANALISADOR DE HEMATOLOGIA, HEMOGRAMA, CBC, CONTADOR DE CELULAS, EQUIPAMENTO HEMATOLOGIA, LOCACAO HEMATOLOGIA",
+    "preco_custo": 0.0,
+    "margem_minima": 0.0
+  },
+  {
+    "nome": "Reagentes para Hematologia",
+    "palavras_chave": "REAGENTE HEMATOLOGICO, REAGENTE DE HEMATOLOGIA, DILUENTE, LISANTE, REAGENTES HEMATOLOGICOS, INSUMOS HEMATOLOGIA",
+    "preco_custo": 0.0,
+    "margem_minima": 0.0
+  },
+  {
+    "nome": "Analisador Bioquímico Automatizado",
+    "palavras_chave": "BIOQUIMICA, ANALISADOR BIOQUIMICO, ANALISADOR DE BIOQUIMICA, QUIMICA CLINICA, EQUIPAMENTO DE BIOQUIMICA, LOCACAO BIOQUIMICA, AUTOMACAO BIOQUIMICA",
+    "preco_custo": 0.0,
+    "margem_minima": 0.0
+  },
+  {
+    "nome": "Reagentes para Bioquímica",
+    "palavras_chave": "REAGENTE DE BIOQUIMICA, REAGENTE PARA BIOQUIMICA, GLICOSE, COLESTEROL, TRIGLICERIDES, UREIA, CREATININA, TGO, TGP, ENZIMAS, REAGENTES BIOQUIMICOS, HDL, LDL",
+    "preco_custo": 0.0,
+    "margem_minima": 0.0
+  },
+  {
+    "nome": "Analisador de Coagulação",
+    "palavras_chave": "COAGULACAO, ANALISADOR DE COAGULACAO, COAGULOMETRO, TP, TTPA, TT, FIBRINOGENIO, EQUIPAMENTO DE COAGULACAO, HEMOSTASIA",
+    "preco_custo": 0.0,
+    "margem_minima": 0.0
+  },
+  {
+    "nome": "Reagentes para Coagulação",
+    "palavras_chave": "REAGENTE DE COAGULACAO, TROMBOPLASTINA, REAGENTES COAGULACAO, INSUMOS COAGULACAO, HEMOSTASIA",
+    "preco_custo": 0.0,
+    "margem_minima": 0.0
+  },
+  {
+    "nome": "Analisador de Imunologia/Hormônios",
+    "palavras_chave": "IMUNOLOGIA, HORMONIOS, ANALISADOR DE IMUNOLOGIA, ANALISADOR IMUNOLOGICO, IMUNOENSAIO, ELISA, IMUNOFLUORECENCIA, FLUORECENCIA, QUIMIOLUMINESCENCIA, EQUIPAMENTO IMUNOLOGIA, TSH, T4, T3",
+    "preco_custo": 0.0,
+    "margem_minima": 0.0
+  },
+  {
+    "nome": "Reagentes para Imunologia",
+    "palavras_chave": "REAGENTE IMUNOLOGIA, HORMONIOS, TSH, T4 LIVRE, T3, PSA, BETA HCG, REAGENTES IMUNOLOGICOS",
+    "preco_custo": 0.0,
+    "margem_minima": 0.0
+  },
+  {
+    "nome": "Analisador de Eletrólitos/Ionograma",
+    "palavras_chave": "IONOGRAMA, ELETROLITOS, ANALISADOR IONS, SODIO, POTASSIO, CLORO, CALCIO IONICO, EQUIPAMENTO IONOGRAMA",
+    "preco_custo": 0.0,
+    "margem_minima": 0.0
+  },
+  {
+    "nome": "Reagentes para Ionograma",
+    "palavras_chave": "REAGENTE IONOGRAMA, ELETROLITOS, SOLUCAO CALIBRADORA, REAGENTES IONOGRAMA",
+    "preco_custo": 0.0,
+    "margem_minima": 0.0
+  },
+  {
+    "nome": "Analisador de Gasometria/POCT",
+    "palavras_chave": "GASOMETRIA, POCT, POINT OF CARE, GASES SANGUINEOS, PH, PCO2, PO2, EQUIPAMENTO GASOMETRIA, HEMOGASOMETRO",
+    "preco_custo": 0.0,
+    "margem_minima": 0.0
+  },
+  {
+    "nome": "Cartuchos/Reagentes Gasometria",
+    "palavras_chave": "CARTUCHO GASOMETRIA, REAGENTE GASOMETRIA, SENSOR GASOMETRIA, INSUMOS GASOMETRIA, POCT",
+    "preco_custo": 0.0,
+    "margem_minima": 0.0
+  },
+  {
+    "nome": "Analisador de Urina",
+    "palavras_chave": "URANALISE, ANALISE URINA, ANALISADOR URINA, SUMARIO DE URINA, EAS, EQUIPAMENTO URINA",
+    "preco_custo": 0.0,
+    "margem_minima": 0.0
+  },
+  {
+    "nome": "Tiras Reagentes para Urina",
+    "palavras_chave": "TIRA REAGENTE URINA, FITA URINA, REAGENTE URINA, URANALISE",
+    "preco_custo": 0.0,
+    "margem_minima": 0.0
+  },
+  {
+    "nome": "Tubos para Coleta de Sangue",
+    "palavras_chave": "TUBO COLETA, TUBO VACUO, TUBO EDTA, TUBO HEPARINA, TUBO CITRATO, TUBO GEL, COLETA SANGUE, TUBOS",
+    "preco_custo": 0.0,
+    "margem_minima": 0.0
+  },
+  {
+    "nome": "Luvas de Procedimento",
+    "palavras_chave": "LUVA, LUVAS, LUVA PROCEDIMENTO, LUVA LATEX, LUVA NITRILO, LUVA VINIL",
+    "preco_custo": 0.0,
+    "margem_minima": 0.0
+  },
+  {
+    "nome": "Máscaras Descartáveis",
+    "palavras_chave": "MASCARA, MASCARAS, MASCARA CIRURGICA, MASCARA DESCARTAVEL, MASCARA TNT",
+    "preco_custo": 0.0,
+    "margem_minima": 0.0
+  },
+  {
+    "nome": "Cateter Intravenoso Periférico",
+    "palavras_chave": "CATETER, CATETER INTRAVENOSO, CATETER PERIFERICO, CATETER IV, JELCO, ABOCATH, SCALP, CATETER VENOSO, ACESSO VENOSO, CATETER AGULHADO",
+    "preco_custo": 0.0,
+    "margem_minima": 0.0
+  },
+  {
+    "nome": "Cateter Venoso Central",
+    "palavras_chave": "CATETER VENOSO CENTRAL, CVC, CATETER CENTRAL, CATETER DUPLO LUMEN, CATETER TRIPLO LUMEN, CATETER MONO LUMEN, INTRACATH, CATETER JUGULAR, CATETER SUBCLAVIA",
+    "preco_custo": 0.0,
+    "margem_minima": 0.0
+  },
+  {
+    "nome": "Cateter Umbilical",
+    "palavras_chave": "CATETER UMBILICAL, CATETER UMBILICAL VENOSO, CATETER UMBILICAL ARTERIAL, CATETERISMO UMBILICAL",
+    "preco_custo": 0.0,
+    "margem_minima": 0.0
+  },
+  {
+    "nome": "Cateter de Oxigênio",
+    "palavras_chave": "CATETER OXIGENIO, CATETER NASAL, CATETER O2, CATETER TIPO OCULOS, OCULOS NASAL, CANULA NASAL O2",
+    "preco_custo": 0.0,
+    "margem_minima": 0.0
+  },
+  {
+    "nome": "Cateter para Hemodiálise",
+    "palavras_chave": "CATETER HEMODIALISE, CATETER DIALISE, CATETER PERMCATH, CATETER TEMPORARIO HEMODIALISE, CATETER DUPLO LUMEN HEMODIALISE",
+    "preco_custo": 0.0,
+    "margem_minima": 0.0
+  },
+  {
+    "nome": "Sonda Nasogástrica",
+    "palavras_chave": "SONDA NASOGASTRICA, SONDA NG, SNG, SONDA LEVINE, SONDA GÁSTRICA, SONDA ESTOMACAL, SONDA ALIMENTACAO",
+    "preco_custo": 0.0,
+    "margem_minima": 0.0
+  },
+  {
+    "nome": "Sonda Nasoenteral",
+    "palavras_chave": "SONDA NASOENTERAL, SONDA ENTERAL, SNE, SONDA DOBBHOFF, SONDA NUTRICAO ENTERAL, SONDA ALIMENTACAO ENTERAL",
+    "preco_custo": 0.0,
+    "margem_minima": 0.0
+  },
+  {
+    "nome": "Sonda Vesical de Demora (Foley)",
+    "palavras_chave": "SONDA VESICAL, SONDA FOLEY, SONDA DEMORA, SVD, SONDA URINARIA, CATETER FOLEY, SONDA BALONADA, SONDA 2 VIAS, SONDA 3 VIAS",
+    "preco_custo": 0.0,
+    "margem_minima": 0.0
+  },
+  {
+    "nome": "Sonda Vesical de Alívio",
+    "palavras_chave": "SONDA ALIVIO, SONDA URETRAL, SONDA VESICAL ALIVIO, SVA, SONDA NELATON, CATETERISMO VESICAL",
+    "preco_custo": 0.0,
+    "margem_minima": 0.0
+  },
+  {
+    "nome": "Sonda Retal",
+    "palavras_chave": "SONDA RETAL, SONDA EVACUADORA, SONDA INTESTINAL, SONDA FLEET, LAVAGEM INTESTINAL",
+    "preco_custo": 0.0,
+    "margem_minima": 0.0
+  },
+  {
+    "nome": "Sonda Endotraqueal",
+    "palavras_chave": "SONDA ENDOTRAQUEAL, TUBO ENDOTRAQUEAL, TUBO OROTRAQUEAL, TOT, CANULA ENDOTRAQUEAL, INTUBACAO",
+    "preco_custo": 0.0,
+    "margem_minima": 0.0
+  },
+  {
+    "nome": "Sonda de Aspiração",
+    "palavras_chave": "SONDA ASPIRACAO, SONDA TRAQUEAL, SONDA SUCCAO, ASPIRACAO TRAQUEAL, SONDA ASPIRAÇAO SECRECAO",
+    "preco_custo": 0.0,
+    "margem_minima": 0.0
+  },
+  {
+    "nome": "Cânula de Guedel",
+    "palavras_chave": "CANULA GUEDEL, CANULA OROFARINGEA, CANULA ORAL, AIRWAY, CANULA DE BERMAN, VIA AEREA ORAL",
+    "preco_custo": 0.0,
+    "margem_minima": 0.0
+  },
+  {
+    "nome": "Cânula Nasofaríngea",
+    "palavras_chave": "CANULA NASOFARINGEA, CANULA NASAL, AIRWAY NASAL, VIA AEREA NASAL",
+    "preco_custo": 0.0,
+    "margem_minima": 0.0
+  },
+  {
+    "nome": "Cânula de Traqueostomia",
+    "palavras_chave": "CANULA TRAQUEOSTOMIA, CANULA TRAQUEO, TRAQUEOSTOMO, TUBO TRAQUEOSTOMIA, CANULA SHILEY, CANULA PORTEX, CANULA METALICA",
+    "preco_custo": 0.0,
+    "margem_minima": 0.0
+  },
+  {
+    "nome": "Cânula Nasal de Oxigênio",
+    "palavras_chave": "CANULA NASAL, CATETER NASAL, OCULOS NASAL, CANULA O2, CANULA OXIGENIO, CATETER TIPO OCULOS",
+    "preco_custo": 0.0,
+    "margem_minima": 0.0
+  },
+  {
+    "nome": "Cânula de Alto Fluxo",
+    "palavras_chave": "CANULA ALTO FLUXO, CATETER NASAL ALTO FLUXO, CNAF, HIGH FLOW, OPTIFLOW",
+    "preco_custo": 0.0,
+    "margem_minima": 0.0
+  },
+  {
+    "nome": "Equipo Macrogotas",
+    "palavras_chave": "EQUIPO, EQUIPO MACROGOTAS, EQUIPO SORO, EQUIPO SIMPLES, EQUIPO INFUSAO, SET INFUSAO, EQUIPO GRAVITACIONAL",
+    "preco_custo": 0.0,
+    "margem_minima": 0.0
+  },
+  {
+    "nome": "Equipo Microgotas",
+    "palavras_chave": "EQUIPO MICROGOTAS, EQUIPO PEDIATRICO, EQUIPO MICRO, MICROGOTAS",
+    "preco_custo": 0.0,
+    "margem_minima": 0.0
+  },
+  {
+    "nome": "Equipo Fotossensível",
+    "palavras_chave": "EQUIPO FOTOSSENSIVEL, EQUIPO AMBAR, EQUIPO FOTOPROTETOR, EQUIPO ESCURO, EQUIPO PROTEGIDO LUZ",
+    "preco_custo": 0.0,
+    "margem_minima": 0.0
+  },
+  {
+    "nome": "Equipo com Bureta",
+    "palavras_chave": "EQUIPO BURETA, EQUIPO GRADUADO, EQUIPO VOLUME, BURETA GRADUADA, EQUIPO DOSADOR",
+    "preco_custo": 0.0,
+    "margem_minima": 0.0
+  },
+  {
+    "nome": "Equipo Multivias",
+    "palavras_chave": "EQUIPO MULTIVIAS, EQUIPO 2 VIAS, EQUIPO 3 VIAS, EQUIPO DUPLA VIA, TORNEIRA 3 VIAS, DÂNULA, POLIFIX",
+    "preco_custo": 0.0,
+    "margem_minima": 0.0
+  },
+  {
+    "nome": "Equipo para Bomba de Infusão",
+    "palavras_chave": "EQUIPO BOMBA INFUSAO, EQUIPO BIC, EQUIPO BOMBA, SET BOMBA INFUSAO, EQUIPO INFUSAO CONTROLADA",
+    "preco_custo": 0.0,
+    "margem_minima": 0.0
+  },
+  {
+    "nome": "Equipo para Nutrição Enteral",
+    "palavras_chave": "EQUIPO ENTERAL, EQUIPO DIETA, EQUIPO NUTRICAO, EQUIPO ALIMENTACAO ENTERAL, SET ENTERAL",
+    "preco_custo": 0.0,
+    "margem_minima": 0.0
+  },
+  {
+    "nome": "Equipo para Hemotransfusão",
+    "palavras_chave": "EQUIPO SANGUE, EQUIPO TRANSFUSAO, EQUIPO HEMOTRANSFUSAO, SET TRANSFUSAO, EQUIPO HEMOCOMPONENTES",
+    "preco_custo": 0.0,
+    "margem_minima": 0.0
+  },
+  {
+    "nome": "Testes Rápidos Diagnósticos",
+    "palavras_chave": "TESTE RAPIDO, COVID, DENGUE, HIV, SIFILIS, HEPATITE, GRAVIDEZ, BETA HCG, IMUNOCROMATOGRAFIA",
+    "preco_custo": 0.0,
+    "margem_minima": 0.0
+  },
+  {
+    "nome": "Controles de Qualidade Laboratorial",
+    "palavras_chave": "CONTROLE QUALIDADE, CONTROLE INTERNO, CALIBRADOR, PADRAO, CONTROLE HEMATOLOGIA, CONTROLE BIOQUIMICA",
+    "preco_custo": 0.0,
+    "margem_minima": 0.0
+  },
+  {
+    "nome": "Serviço de Manutenção Preventiva",
+    "palavras_chave": "MANUTENCAO PREVENTIVA, MANUTENCAO EQUIPAMENTO, CALIBRACAO, AFERICAO, ASSISTENCIA TECNICA",
+    "preco_custo": 0.0,
+    "margem_minima": 0.0
+  }
+]

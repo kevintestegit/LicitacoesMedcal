@@ -49,3 +49,7 @@ Thumbs.db
 # Environment variables
 .env
 .env.local
+
+# Backups
+backups/backup_medcal_*.json
+!backups/backup_medcal_latest.json

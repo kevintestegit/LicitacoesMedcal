@@ -336,8 +336,8 @@ class PNCPClient:
         resultados = []
 
         print(f"\n{'='*80}")
-        print(f"🔍 INICIANDO BUSCA NO PNCP")
-        print(f"Período: {data_inicial} a {data_final}")
+        print("[PNCP] INICIANDO BUSCA NO PNCP")
+        print(f"Periodo: {data_inicial} a {data_final}")
         print(f"Estados: {estados}")
         print(f"Filtro apenas abertas: {apenas_abertas}")
         print(f"{'='*80}\n")
@@ -345,12 +345,11 @@ class PNCPClient:
         total_api = 0
 
         # 6=Pregão Eletrônico, 8=Dispensa de Licitação/Compra Direta, 12=Dispensa Emergencial
-        # Removido: 9=Inexigibilidade (já tem fornecedor definido, não vale participar)
         for modalidade in [6, 8, 12]:
             modalidade_nome = {6: "Pregão Eletrônico", 8: "Dispensa/Compra Direta", 12: "Dispensa Emergencial"}.get(modalidade)
 
             for uf in estados:
-                print(f"\n📍 Buscando {modalidade_nome} em {uf}...")
+                print(f"\n[PNCP] Buscando {modalidade_nome} em {uf}...")
 
                 # Busca paginada com limite
                 tamanho_pagina = 50  # API retorna erro 400 acima de 50
@@ -380,7 +379,7 @@ class PNCPClient:
                             resp = self.session.get(self.BASE_URL, params=params_iso, headers=self.headers, timeout=30)
 
                         if resp.status_code != 200:
-                            print(f"  ⚠️ Erro HTTP {resp.status_code} - Página {pagina}")
+                            print(f"  [WARN] Erro HTTP {resp.status_code} - Pagina {pagina}")
                             # Não quebra o loop, tenta a próxima página ou modalidade
                             continue
 
@@ -388,10 +387,10 @@ class PNCPClient:
                         total_api += len(data)
 
                         if not data:
-                            print(f"  ℹ️ Página {pagina} vazia - fim da busca para {uf}")
+                            print(f"  [INFO] Pagina {pagina} vazia - fim da busca para {uf}")
                             break
 
-                        print(f"  ✅ Página {pagina}: {len(data)} licitações encontradas")
+                        print(f"  [OK] Pagina {pagina}: {len(data)} licitacoes encontradas")
                         
                         for item in data:
 
@@ -430,10 +429,10 @@ class PNCPClient:
                             resultados.append(parsed)
                             
                     except requests.exceptions.ReadTimeout:
-                        print(f"  ❌ Timeout na página {pagina} de {uf}. Tentando próxima...")
+                        print(f"  [FAIL] Timeout na pagina {pagina} de {uf}. Tentando proxima...")
                         continue
                     except Exception as e:
-                        print(f"  ❌ ERRO na página {pagina}: {e}")
+                        print(f"  [FAIL] ERRO na pagina {pagina}: {e}")
                         continue
 
                     # Se veio menos que o tamanho da página, acabou a lista
@@ -443,7 +442,7 @@ class PNCPClient:
                     time.sleep(0.05)
 
         print(f"\n{'='*80}")
-        print(f"📊 RESUMO DA BUSCA")
+        print("[PNCP] RESUMO DA BUSCA")
         print(f"Total retornado pela API: {total_api}")
         print(f"Total APROVADO (após filtros): {len(resultados)}")
         print(f"{'='*80}\n")

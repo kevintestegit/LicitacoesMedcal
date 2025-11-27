@@ -6,7 +6,8 @@
       "Bash(mkdir:*)",
       "Bash(python -m py_compile:*)",
       "Bash(python scripts/setup_financeiro.py:*)",
-      "Bash(python:*)"
+      "Bash(python:*)",
+      "Bash(code:*)"
     ],
     "deny": [],
     "ask": []
