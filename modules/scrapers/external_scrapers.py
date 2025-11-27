@@ -6,6 +6,9 @@ import io
 from pypdf import PdfReader
 import re
 import unicodedata
+import json
+import google.generativeai as genai
+from modules.database.database import get_session, Configuracao
 from .pncp_client import PNCPClient
 
 class ExternalScraper:
@@ -43,6 +46,52 @@ class DiarioMunicipalScraper(ExternalScraper):
                 return src
         
         return None
+
+    def _enrich_with_ai(self, texto_aviso):
+        """Usa Gemini para extrair itens e resumir objeto"""
+        try:
+            session = get_session()
+            config = session.query(Configuracao).filter_by(chave='gemini_api_key').first()
+            session.close()
+            
+            if not config or not config.valor:
+                return None
+
+            genai.configure(api_key=config.valor)
+            model = genai.GenerativeModel('gemini-2.0-flash')
+            
+            prompt = f"""
+            Analise o seguinte aviso de licitação extraído de um Diário Oficial.
+            
+            Tarefa:
+            1. Identifique o Objeto principal de forma resumida.
+            2. Extraia a lista de itens/produtos (se houver) com quantidade estimada.
+            3. Se não houver itens explícitos, retorne lista vazia.
+            
+            Texto:
+            {texto_aviso[:8000]}            
+            Retorne APENAS um JSON válido no formato:
+            {{
+                "objeto_resumido": "...",
+                "itens": [
+                    {{"descricao": "Nome do Item", "quantidade": 100, "unidade": "UN", "valor_estimado": 0.0, "valor_unitario": 0.0}}
+                ]
+            }}
+            """
+            
+            response = model.generate_content(prompt)
+            raw_json = response.text.replace('```json', '').replace('```', '').strip()
+            
+            # Tenta limpar o JSON se vier sujo
+            if '{' in raw_json:
+                raw_json = raw_json[raw_json.find('{'):raw_json.rfind('}')+1]
+                
+            data = json.loads(raw_json)
+            return data
+            
+        except Exception as e:
+            print(f"Erro na IA (Enrich): {e}")
+            return None
 
     def buscar_oportunidades(self, termos_busca=None, termos_negativos=None):
         """
@@ -169,15 +218,65 @@ class DiarioMunicipalScraper(ExternalScraper):
                                 break
 
                         # Extract Modalidade (Heuristic)
+                        if "INEXIGIBILIDADE" in full_notice_norm: 
+                            continue # Ignora Inexigibilidade
+
                         modalidade = "Diário Oficial"
                         if "DISPENSA" in full_notice_norm: modalidade = "Dispensa"
-                        elif "INEXIGIBILIDADE" in full_notice_norm: modalidade = "Inexigibilidade"
                         elif "PREGAO" in full_notice_norm: modalidade = "Pregão"
                         elif "CONCORRENCIA" in full_notice_norm: modalidade = "Concorrência"
                         elif "TOMADA DE PRECO" in full_notice_norm: modalidade = "Tomada de Preço"
                         elif "CHAMADA PUBLICA" in full_notice_norm: modalidade = "Chamada Pública"
                         elif "AVISO DE LICITACAO" in full_notice_norm: modalidade = "Aviso de Licitação"
                         elif "EXTRATO" in full_notice_norm: modalidade = "Extrato/Contrato"
+
+                        # ============================================================
+                        # FILTRO RIGOROSO: Só aceita documentos de LICITAÇÃO ABERTA
+                        # ============================================================
+                        
+                        # Termos que indicam LICITAÇÃO ABERTA (deve ter pelo menos um)
+                        termos_licitacao_valida = [
+                            "AVISO DE LICITACAO", "AVISO DE LICITAÇÃO",
+                            "PREGAO ELETRONICO", "PREGÃO ELETRÔNICO", "PREGAO PRESENCIAL", "PREGÃO PRESENCIAL",
+                            "DISPENSA DE LICITACAO", "DISPENSA DE LICITAÇÃO", "DISPENSA ELETRONICA", "DISPENSA ELETRÔNICA",
+                            "TOMADA DE PRECO", "TOMADA DE PREÇO", "TOMADA DE PREÇOS",
+                            "CONCORRENCIA PUBLICA", "CONCORRÊNCIA PÚBLICA",
+                            "CHAMAMENTO PUBLICO", "CHAMAMENTO PÚBLICO",
+                            "CHAMADA PUBLICA", "CHAMADA PÚBLICA",
+                            "EDITAL DE LICITACAO", "EDITAL DE LICITAÇÃO",
+                            "PROCESSO LICITATORIO", "PROCESSO LICITATÓRIO"
+                        ]
+                        
+                        # Verifica se é uma licitação válida
+                        eh_licitacao_valida = any(termo in full_notice_norm for termo in termos_licitacao_valida)
+                        
+                        if not eh_licitacao_valida:
+                            continue  # Pula documentos que não são licitações abertas
+                        
+                        # Termos que indicam documentos NÃO desejados (mesmo que tenham termos positivos)
+                        termos_documento_invalido = [
+                            "NOTIFICACAO", "NOTIFICAÇÃO",
+                            "ATRASO NA ENTREGA", "ATRASO DE ENTREGA",
+                            "PENALIDADE", "PENALIDADES", "MULTA", "ADVERTENCIA", "ADVERTÊNCIA",
+                            "RESCISAO", "RESCISÃO", "RESCISAO DE CONTRATO", "RESCISÃO DE CONTRATO",
+                            "EXTRATO DE CONTRATO", "EXTRATO DO CONTRATO",
+                            "EXTRATO DE TERMO ADITIVO", "TERMO ADITIVO",
+                            "RATIFICACAO", "RATIFICAÇÃO", "HOMOLOGACAO", "HOMOLOGAÇÃO",
+                            "ADJUDICACAO", "ADJUDICAÇÃO",
+                            "RESULTADO DE JULGAMENTO", "RESULTADO DO JULGAMENTO",
+                            "ATA DE REGISTRO DE PRECO", "ATA DE REGISTRO DE PREÇO",
+                            "PUBLICACAO DE ATA", "PUBLICAÇÃO DE ATA",
+                            "ERRATA", "RETIFICACAO", "RETIFICAÇÃO",
+                            "CONVOCACAO PARA ASSINATURA", "CONVOCAÇÃO PARA ASSINATURA",
+                            "ORDEM DE FORNECIMENTO", "ORDEM DE SERVICO", "ORDEM DE SERVIÇO",
+                            "DESPACHO", "PARECER", "PORTARIA"
+                        ]
+                        
+                        # Se contém termo de documento inválido, pula
+                        tem_termo_invalido = any(termo in full_notice_norm for termo in termos_documento_invalido)
+                        
+                        if tem_termo_invalido:
+                            continue  # Pula notificações, extratos, aditivos, etc.
 
                         # FILTRO ADICIONAL: Detecta contratos já assinados (com contratado)
                         # Padrões que indicam que já tem vencedor/contratado
@@ -196,6 +295,28 @@ class DiarioMunicipalScraper(ExternalScraper):
 
                         if should_skip:
                             continue  # Pula este aviso, já tem contratado
+                        
+                        # === IA ENRICHMENT ===
+                        # Usa Gemini para estruturar o aviso (itens e objeto limpo)
+                        ai_data = self._enrich_with_ai(full_notice_clean)
+                        
+                        objeto_final = full_notice_clean
+                        itens_final = []
+                        
+                        if ai_data:
+                            if ai_data.get('objeto_resumido'):
+                                objeto_final = ai_data['objeto_resumido'] + "\n\n[IA] Texto Original Resumido."
+                            
+                            if ai_data.get('itens'):
+                                for it in ai_data['itens']:
+                                    itens_final.append({
+                                        "numero": 0, 
+                                        "descricao": it.get('descricao', 'Item sem nome'),
+                                        "quantidade": it.get('quantidade', 1.0),
+                                        "unidade": it.get('unidade', 'UN'),
+                                        "valor_estimado": it.get('valor_estimado', 0.0),
+                                        "valor_unitario": it.get('valor_unitario', 0.0)
+                                    })
 
                         resultados.append({
                             "pncp_id": f"{self.ORIGEM}-{datetime.now().strftime('%Y%m%d')}-{code_id}",
@@ -204,39 +325,18 @@ class DiarioMunicipalScraper(ExternalScraper):
                             "modalidade": f"{modalidade} ({self.ORIGEM})",
                             "data_sessao": datetime.now().isoformat(),
                             "data_publicacao": datetime.now().isoformat(),
-                            "objeto": full_notice_clean,
+                            "objeto": objeto_final,
                             "link": pdf_url,
-                            "itens": [],
+                            "itens": itens_final, # Agora populado pela IA!
                             "origem": self.ORIGEM
                         })
             
-            if not resultados:
-                 resultados.append({
-                    "pncp_id": f"{self.ORIGEM}-{datetime.now().strftime('%Y%m%d')}-EMPTY",
-                    "orgao": f"Municípios {self.UF} ({self.ORIGEM})",
-                    "uf": self.UF,
-                    "modalidade": "Diário Oficial",
-                    "data_sessao": datetime.now().isoformat(),
-                    "data_publicacao": datetime.now().isoformat(),
-                    "objeto": f"Nenhum termo de interesse encontrado no Diário Oficial de hoje.\n\n--- TEXTO EXTRAÍDO (DEBUG) ---\n{text[:2000]}...",
-                    "link": pdf_url,
-                    "itens": [],
-                    "origem": self.ORIGEM
-                })
+            # Se não encontrou nada relevante, retorna lista vazia (não cria registro de debug)
+            # O usuário será informado no dashboard que "0 resultados foram encontrados"
 
         except Exception as e:
-            resultados.append({
-                "pncp_id": f"{self.ORIGEM}-ERROR",
-                "orgao": self.ORIGEM,
-                "uf": self.UF,
-                "modalidade": "Erro",
-                "data_sessao": datetime.now().isoformat(),
-                "data_publicacao": datetime.now().isoformat(),
-                "objeto": f"Erro ao processar PDF do {self.ORIGEM}: {str(e)}",
-                "link": self.BASE_URL,
-                "itens": [],
-                "origem": self.ORIGEM
-            })
+            # Log do erro mas não cria registro falso
+            print(f"⚠️ Erro ao processar PDF do {self.ORIGEM}: {str(e)}")
             
         return resultados
 

@@ -1,5 +1,6 @@
 import json
 import os
+import unicodedata
 import numpy as np
 import google.generativeai as genai
 from .ai_config import configure_genai
@@ -9,6 +10,36 @@ from modules.database.database import Produto, get_session # Reusing existing mo
 # Caminho absoluto para o cache em data/
 BASE_DIR = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 CACHE_FILE = os.path.join(BASE_DIR, 'data', 'embeddings_cache.json')
+
+# Termos que indicam contexto LABORATORIAL/HOSPITALAR
+CONTEXTO_LABORATORIAL = [
+    "HEMATOLOGIA", "BIOQUIMICA", "COAGULACAO", "COAGULAÇÃO", "IMUNOLOGIA", "IONOGRAMA",
+    "GASOMETRIA", "POCT", "URINALISE", "URINA", "HEMOGRAMA", "LABORATORIO", "LABORATÓRIO",
+    "LABORATORIAL", "ANALISE CLINICA", "ANÁLISE CLÍNICA", "ANALISES CLINICAS", "ANÁLISES CLÍNICAS",
+    "ANALISADOR", "EQUIPAMENTO", "CENTRIFUGA", "CENTRÍFUGA", "MICROSCOPIO", "MICROSCÓPIO",
+    "AUTOCLAVE", "COAGULOMETRO", "COAGULÔMETRO", "HOMOGENEIZADOR", "AGITADOR",
+    "REAGENTE", "REAGENTES", "INSUMO", "INSUMOS", "DILUENTE", "LISANTE", "CALIBRADOR",
+    "CONTROLE DE QUALIDADE", "PADRAO", "PADRÃO",
+    "TUBO", "TUBOS", "COLETA", "VACUO", "VÁCUO", "EDTA", "HEPARINA", "CITRATO",
+    "AGULHA", "SERINGA", "LANCETA", "SCALP", "CATETER",
+    "LUVA", "LUVAS", "MASCARA", "MÁSCARA", "LAMINA", "LÂMINA", "PONTEIRA",
+    "TESTE RAPIDO", "TESTE RÁPIDO", "HEMOSTASIA", "HORMONIO", "HORMÔNIO", "TSH", "T4", "T3",
+    "GLICOSE", "COLESTEROL", "TRIGLICERIDES", "UREIA", "CREATININA", "TGO", "TGP",
+    "HOSPITALAR", "HOSPITALARES", "AMBULATORIAL", "BIOMEDICO", "BIOMÉDICO",
+    "SONDA", "EQUIPO", "EQUIPOS", "CANULA", "CÂNULA",
+    "LOCACAO", "LOCAÇÃO", "COMODATO", "ALUGUEL", "MANUTENCAO PREVENTIVA", "MANUTENÇÃO PREVENTIVA"
+]
+
+def normalize_text(texto: str) -> str:
+    """Normaliza texto removendo acentos e convertendo para maiúsculas."""
+    if not texto:
+        return ""
+    return unicodedata.normalize('NFKD', texto).encode('ASCII', 'ignore').decode('ASCII').upper()
+
+def tem_contexto_laboratorial(texto: str) -> bool:
+    """Verifica se o texto tem contexto laboratorial/hospitalar."""
+    texto_norm = normalize_text(texto)
+    return any(termo in texto_norm for termo in CONTEXTO_LABORATORIAL)
 
 class SemanticMatcher:
     def __init__(self):
@@ -69,12 +100,19 @@ class SemanticMatcher:
         
         session.close()
 
-    def find_matches(self, text_objeto: str, threshold=0.6):
+    def find_matches(self, text_objeto: str, threshold=0.75):
         """
         Finds products that match the object description semantically.
         Returns list of (Produto, score).
+        
+        IMPORTANTE: Só retorna matches se o texto tiver contexto laboratorial.
+        Threshold aumentado de 0.6 para 0.75 para maior precisão.
         """
         if not self.product_embeddings:
+            return []
+        
+        # VALIDAÇÃO DE CONTEXTO: Se não tem contexto laboratorial, retorna vazio
+        if not tem_contexto_laboratorial(text_objeto):
             return []
 
         target_emb = self.generate_embedding(text_objeto)

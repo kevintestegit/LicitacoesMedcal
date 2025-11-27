@@ -5,24 +5,27 @@ import time
 import os
 import unicodedata
 from rapidfuzz import fuzz
+from sqlalchemy import func
 
 # --- IMPORTS DOS MÓDULOS ---
 from modules.database.database import init_db, get_session, Licitacao, ItemLicitacao, Produto, Configuracao
-from modules.finance.bank_models import ContaBancaria, ExtratoBancario, Fatura, Conciliacao
+from modules.finance.bank_models import ExtratoBB, ResumoMensal
+from modules.finance.extrato_parser import importar_extrato_bb, processar_texto_extrato
+from modules.finance import init_finance_db, get_finance_session
 from modules.scrapers.pncp_client import PNCPClient
 from modules.scrapers.external_scrapers import FemurnScraper, FamupScraper, AmupeScraper, AmaScraper, MaceioScraper, MaceioInvesteScraper, MaceioSaudeScraper
 from modules.utils.notifications import WhatsAppNotifier
 from modules.ai.smart_analyzer import SmartAnalyzer
 from modules.ai.eligibility_checker import EligibilityChecker
 from modules.ai.improved_matcher import SemanticMatcher
+from modules.ai.licitacao_validator import validar_licitacao_com_ia  # Validador IA
 from modules.utils import importer # Import module instead of non-existent class
 from modules.utils.cnae_data import get_keywords_by_cnae
 from modules.ai.ai_config import configure_genai
-from modules.finance.extrato_parser import ExtratoParser
-from modules.finance.conciliador import ConciliadorFinanceiro
 
 # Inicializa Banco
 init_db()
+init_finance_db()
 
 # Inicializa IA (tenta configurar se tiver chave)
 try:
@@ -30,7 +33,7 @@ try:
 except:
     pass
 
-st.set_page_config(page_title="Medcal Licitações", layout="wide", page_icon="🏥")
+st.set_page_config(page_title="Medcal Licitações", layout="wide", page_icon="🏥", initial_sidebar_state="expanded")
 
 # --- CSS INJECTION ---
 def local_css(file_name):
@@ -59,25 +62,163 @@ def safe_parse_date(date_str):
     except (ValueError, TypeError):
         return None
 
-def best_match_against_keywords(texto: str, keywords):
-    """Retorna (melhor_score, melhor_keyword) usando fuzzy parcial."""
-    if not texto or not keywords:
+def best_match_against_keywords(texto_item: str, keywords, nome_produto_catalogo=""):
+    """
+    Retorna (melhor_score, melhor_keyword) com lógica RIGOROSA para matching.
+    REGRA PRINCIPAL: Só dá match se o item for do contexto laboratorial/hospitalar.
+    """
+    if not texto_item or not keywords:
         return 0, ""
-    texto_norm = normalize_text(texto)
+    
+    texto_norm = normalize_text(texto_item)
     best_score = 0
     best_kw = ""
+    
+    # ============================================================
+    # ETAPA 1: VERIFICAR SE O ITEM É DO CONTEXTO LABORATORIAL
+    # Se não tiver NENHUM termo do universo médico/laboratorial, retorna 0
+    # ============================================================
+    
+    # Termos que indicam contexto LABORATORIAL/HOSPITALAR (baseados nos termos positivos do PNCP)
+    CONTEXTO_LABORATORIAL = [
+        # Equipamentos e análises
+        "HEMATOLOGIA", "BIOQUIMICA", "COAGULACAO", "COAGULAÇÃO", "IMUNOLOGIA", "IONOGRAMA",
+        "GASOMETRIA", "POCT", "URINALISE", "URINA", "HEMOGRAMA", "LABORATORIO", "LABORATÓRIO",
+        "LABORATORIAL", "ANALISE CLINICA", "ANÁLISE CLÍNICA", "ANALISES CLINICAS", "ANÁLISES CLÍNICAS",
+        # Equipamentos
+        "ANALISADOR", "EQUIPAMENTO", "CENTRIFUGA", "CENTRÍFUGA", "MICROSCOPIO", "MICROSCÓPIO",
+        "AUTOCLAVE", "COAGULOMETRO", "COAGULÔMETRO", "HOMOGENEIZADOR", "AGITADOR",
+        # Reagentes e insumos
+        "REAGENTE", "REAGENTES", "INSUMO", "INSUMOS", "DILUENTE", "LISANTE", "CALIBRADOR",
+        "CONTROLE DE QUALIDADE", "PADRAO", "PADRÃO",
+        # Materiais de coleta
+        "TUBO", "TUBOS", "COLETA", "VACUO", "VÁCUO", "EDTA", "HEPARINA", "CITRATO",
+        "AGULHA", "SERINGA", "LANCETA", "SCALP", "CATETER",
+        # Consumíveis hospitalares
+        "LUVA", "LUVAS", "MASCARA", "MÁSCARA", "LAMINA", "LÂMINA", "PONTEIRA",
+        # Testes e exames
+        "TESTE RAPIDO", "TESTE RÁPIDO", "HEMOSTASIA", "HORMONIO", "HORMÔNIO", "TSH", "T4", "T3",
+        "GLICOSE", "COLESTEROL", "TRIGLICERIDES", "UREIA", "CREATININA", "TGO", "TGP",
+        # Termos gerais médicos
+        "HOSPITALAR", "HOSPITALARES", "AMBULATORIAL", "BIOMEDICO", "BIOMÉDICO",
+        "SONDA", "EQUIPO", "EQUIPOS", "CANULA", "CÂNULA",
+        # Locação/Comodato (termos de modalidade importantes)
+        "LOCACAO", "LOCAÇÃO", "COMODATO", "ALUGUEL", "MANUTENCAO PREVENTIVA", "MANUTENÇÃO PREVENTIVA"
+    ]
+    
+    # Verifica se o item tem contexto laboratorial
+    tem_contexto_lab = any(termo in texto_norm for termo in CONTEXTO_LABORATORIAL)
+    
+    # Se NÃO tem nenhum termo de contexto laboratorial, retorna 0 imediatamente
+    if not tem_contexto_lab:
+        return 0, ""
+    
+    # ============================================================
+    # ETAPA 2: MATCHING COM KEYWORDS DO CATÁLOGO
+    # Só chega aqui se o item passou pela validação de contexto
+    # ============================================================
+    
+    # Palavras que indicam Insumo/Consumível
+    termos_insumo = ["REAGENTE", "SOLUCAO", "LISANTE", "DILUENTE", "TUBO", "LAMINA", "CLORETO", "ACIDO", "KIT", "TIRA", "FRASCO"]
+    
+    # Palavras que indicam Equipamento
+    termos_equip = ["ANALISADOR", "EQUIPAMENTO", "APARELHO", "HOMOGENEIZADOR", "AGITADOR", "CENTRIFUGA", "MICROSCOPIO", "AUTOCLAVE", "COAGULOMETRO"]
+    
+    nome_prod_norm = normalize_text(nome_produto_catalogo)
+    eh_equipamento_catalogo = any(t in nome_prod_norm for t in termos_equip)
+    tem_cara_de_insumo_item = any(t in texto_norm for t in termos_insumo) and not any(t in texto_norm for t in termos_equip)
+    
     for kw in keywords:
-        if not kw:
-            continue
-        score = fuzz.partial_ratio(normalize_text(kw), texto_norm)
+        if not kw: continue
+        kw_norm = normalize_text(kw)
+        
+        # Ignora palavras muito curtas (menos de 4 caracteres)
+        if len(kw_norm) < 4: continue
+        
+        score = 0
+        
+        # ============================================================
+        # ESTRATÉGIA DE MATCHING RIGOROSA:
+        # 1. Match EXATO da keyword no texto = 95 pontos
+        # 2. Todas as palavras da keyword presentes = 85 pontos
+        # 3. Usa token_set_ratio (compara palavras, não substrings) >= 85 = 75 pontos
+        # 4. partial_ratio foi REMOVIDO pois gerava falsos positivos
+        # ============================================================
+        
+        # 1. MATCH EXATO: keyword completa está no texto
+        if kw_norm in texto_norm:
+            score = 95
+        else:
+            # 2. MATCH POR PALAVRAS: todas as palavras da keyword estão no texto
+            palavras_kw = set(kw_norm.split())
+            palavras_texto = set(texto_norm.split())
+            palavras_em_comum = palavras_kw.intersection(palavras_texto)
+            
+            if len(palavras_kw) > 0:
+                percentual_match = len(palavras_em_comum) / len(palavras_kw)
+                
+                if percentual_match >= 1.0:  # 100% das palavras
+                    score = 90
+                elif percentual_match >= 0.8:  # 80% das palavras
+                    score = 80
+                elif percentual_match >= 0.6:  # 60% das palavras
+                    # 3. Usa token_set_ratio como fallback (mais rigoroso que partial_ratio)
+                    token_score = fuzz.token_set_ratio(kw_norm, texto_norm)
+                    if token_score >= 90:
+                        score = 75
+                    elif token_score >= 85:
+                        score = 70
+                    # Se token_score < 85, score permanece 0 (sem match)
+        
+        # ============================================================
+        # PENALIZAÇÃO CRUZADA (EQUIPAMENTO x INSUMO)
+        # Evita que equipamento faça match com reagentes e vice-versa
+        # ============================================================
+        if eh_equipamento_catalogo and tem_cara_de_insumo_item:
+            if not any(ti in kw_norm for ti in termos_insumo):
+                score -= 50 
+        
         if score > best_score:
             best_score = score
             best_kw = kw
-    return best_score, best_kw
+            
+    return max(0, best_score), best_kw
 
 # --- SIDEBAR ---
-st.sidebar.title("🏥 Medcal Gestão")
-page = st.sidebar.radio("Navegação", ["Dashboard", "Buscar Licitações", "Gestão (Kanban)", "🧠 Análise de IA", "Meu Catálogo", "📥 Importar & Relatórios", "💰 Gestão Financeira", "Configurações"])
+with st.sidebar:
+    st.markdown("""
+        <div style="padding: 12px 0 16px 0; text-align: center; border-bottom: 1px solid rgba(255,255,255,0.1); margin-bottom: 12px;">
+            <div style="font-size: 24px; margin-bottom: 4px;">🏥</div>
+            <div style="font-size: 14px; font-weight: 600; color: #ffffff; letter-spacing: -0.02em;">Medcal</div>
+            <div style="font-size: 9px; color: rgba(255,255,255,0.5); text-transform: uppercase; letter-spacing: 0.1em;">Gestão de Licitações</div>
+        </div>
+    """, unsafe_allow_html=True)
+    
+    page = st.radio(
+        "Navegação Principal",
+        ["📊 Dashboard", "🔍 Buscar", "🧠 Análise IA", "📦 Catálogo", "💰 Financeiro", "⚙️ Config"],
+        label_visibility="collapsed"
+    )
+    
+    # Espaçador para empurrar a versão para o final
+    st.markdown("<div style='flex-grow: 1; min-height: 50px;'></div>", unsafe_allow_html=True)
+    
+    st.markdown("""
+        <div style="text-align: center; padding: 16px 0; margin-top: auto;">
+            <div style="font-size: 9px; color: rgba(255,255,255,0.3);">v2.0 • 2025</div>
+        </div>
+    """, unsafe_allow_html=True)
+
+# Mapeamento para manter compatibilidade com os IFs abaixo
+page_map = {
+    "📊 Dashboard": "Dashboard",
+    "🔍 Buscar": "Buscar Licitações",
+    "🧠 Análise IA": "🧠 Análise de IA",
+    "📦 Catálogo": "Catálogo",
+    "💰 Financeiro": "💰 Gestão Financeira",
+    "⚙️ Config": "Configurações"
+}
+page = page_map.get(page, page)
 
 # --- FUNÇÕES AUXILIARES ---
 def salvar_produtos(df_editor):
@@ -99,8 +240,8 @@ def salvar_produtos(df_editor):
     session.close()
     st.success("Catálogo atualizado!")
 
-def match_itens(session, licitacao_id, limiar=80):
-    """Tenta cruzar itens da licitação com produtos do catálogo com fuzzy matching"""
+def match_itens(session, licitacao_id, limiar=75):
+    """Tenta cruzar itens da licitação com produtos do catálogo com matching RIGOROSO"""
     licitacao = session.query(Licitacao).filter_by(id=licitacao_id).first()
     produtos = session.query(Produto).all()
     
@@ -113,7 +254,7 @@ def match_itens(session, licitacao_id, limiar=80):
         for prod in produtos:
             keywords = [k.strip() for k in prod.palavras_chave.split(',') if k.strip() and len(k.strip()) > 3]
             keywords.append(prod.nome)
-            score, _ = best_match_against_keywords(item_desc, keywords)
+            score, _ = best_match_against_keywords(item_desc, keywords, nome_produto_catalogo=prod.nome)
             if score > melhor_score:
                 melhor_match = prod
                 melhor_score = score
@@ -128,6 +269,172 @@ def match_itens(session, licitacao_id, limiar=80):
             
     session.commit()
     return count
+
+
+def gerar_relatorio_whatsapp(licitacoes_relevantes, session):
+    """
+    Gera relatórios compactos para WhatsApp, divididos em múltiplas mensagens.
+    Retorna LISTA de mensagens (cada uma com até 10 licitações).
+    """
+    if not licitacoes_relevantes:
+        return []
+    
+    mensagens = []
+    lics_por_msg = 10  # Máximo de licitações por mensagem
+    
+    # Divide em lotes
+    for i in range(0, len(licitacoes_relevantes), lics_por_msg):
+        lote = licitacoes_relevantes[i:i + lics_por_msg]
+        parte_atual = (i // lics_por_msg) + 1
+        total_partes = (len(licitacoes_relevantes) + lics_por_msg - 1) // lics_por_msg
+        
+        # Cabeçalho
+        data_hora = datetime.now().strftime("%d/%m/%Y %H:%M")
+        if total_partes > 1:
+            linhas = [f"📋 *MEDCAL* ({parte_atual}/{total_partes})", f"🕐 {data_hora}", ""]
+        else:
+            linhas = [f"📋 *MEDCAL* - {len(licitacoes_relevantes)} oportunidades", f"🕐 {data_hora}", ""]
+        
+        for idx, lic in enumerate(lote, 1):
+            # Extrai dados
+            orgao = lic.get('orgao', 'N/A')
+            # Limita tamanho do órgão mas mantém informação útil
+            if len(orgao) > 35:
+                orgao = orgao[:32] + "..."
+            uf = lic.get('uf', 'BR')
+            modalidade = lic.get('modalidade', 'N/A')
+            # Simplifica modalidade
+            if 'Pregão' in modalidade or 'Pregao' in modalidade:
+                mod_curto = 'PE'
+            elif 'Dispensa' in modalidade:
+                mod_curto = 'Disp'
+            elif 'Emergencial' in modalidade:
+                mod_curto = 'Emerg'
+            else:
+                mod_curto = modalidade[:6]
+            
+            link = lic.get('link', '')
+            
+            # Data limite de proposta
+            data_enc = lic.get('data_encerramento_proposta')
+            if data_enc:
+                try:
+                    if isinstance(data_enc, str):
+                        dt = datetime.fromisoformat(data_enc[:10])
+                    else:
+                        dt = data_enc
+                    prazo = dt.strftime("%d/%m")
+                except:
+                    prazo = "N/I"
+            else:
+                prazo = "N/I"
+            
+            # Itens matched (se houver)
+            matched = lic.get('matched_products', [])
+            if matched:
+                # Pega apenas o primeiro produto e abrevia
+                item_str = matched[0][:20]
+                if len(matched) > 1:
+                    item_str += f" +{len(matched)-1}"
+                itens_linha = f"\n   🎯 {item_str}"
+            else:
+                itens_linha = ""
+            
+            # Formato compacto:
+            # 1. HOSPITAL X (RN) 📅30/11 PE
+            #    🎯 Reagente Hematologia
+            #    🔗 link
+            num_global = i + idx
+            linha = f"{num_global}. *{orgao}* ({uf})"
+            linha += f"\n   📅 {prazo} | {mod_curto}"
+            linha += itens_linha
+            linha += f"\n   🔗 {link}"
+            
+            linhas.append(linha)
+            linhas.append("")  # Linha em branco entre licitações
+        
+        mensagens.append("\n".join(linhas))
+    
+    return mensagens
+
+
+def enviar_relatorio_completo(licitacoes, session):
+    """
+    Envia relatório para todos os contatos configurados.
+    Divide em múltiplas mensagens se necessário.
+    """
+    import json
+    import time
+    
+    if not licitacoes:
+        return False
+    
+    # Busca contatos
+    config_contacts = session.query(Configuracao).filter_by(chave='whatsapp_contacts').first()
+    
+    if not config_contacts or not config_contacts.valor:
+        # Tenta formato antigo
+        conf_phone = session.query(Configuracao).filter_by(chave='whatsapp_phone').first()
+        conf_key = session.query(Configuracao).filter_by(chave='whatsapp_apikey').first()
+        
+        if conf_phone and conf_key and conf_phone.valor and conf_key.valor:
+            contacts_list = [{"nome": "Principal", "phone": conf_phone.valor, "apikey": conf_key.valor}]
+        else:
+            return False
+    else:
+        try:
+            contacts_list = json.loads(config_contacts.valor)
+        except:
+            return False
+    
+    if not contacts_list:
+        return False
+    
+    # Gera relatórios (lista de mensagens)
+    mensagens = gerar_relatorio_whatsapp(licitacoes, session)
+    if not mensagens:
+        return False
+    
+    # Envia para todos os contatos
+    enviados = 0
+    for contact in contacts_list:
+        try:
+            notifier = WhatsAppNotifier(contact.get('phone'), contact.get('apikey'))
+            for idx, msg in enumerate(mensagens):
+                if notifier.enviar_mensagem(msg):
+                    enviados += 1
+                # Pausa entre mensagens para evitar bloqueio (2 segundos)
+                if idx < len(mensagens) - 1:
+                    time.sleep(2)
+        except Exception as e:
+            print(f"Erro ao enviar para {contact.get('nome')}: {e}")
+    
+    return enviados > 0
+
+
+def filtrar_itens_negativos(itens_api, termos_negativos):
+    """
+    Filtra itens que contenham termos negativos (enxoval, berço, etc).
+    Retorna apenas itens válidos.
+    """
+    if not itens_api:
+        return []
+    
+    itens_validos = []
+    termos_neg_norm = [normalize_text(t) for t in termos_negativos]
+    
+    for item in itens_api:
+        desc = item.get('descricao', '')
+        desc_norm = normalize_text(desc)
+        
+        # Verifica se contém termo negativo
+        tem_negativo = any(t in desc_norm for t in termos_neg_norm)
+        
+        if not tem_negativo:
+            itens_validos.append(item)
+    
+    return itens_validos
+
 
 def processar_resultados(resultados_raw):
     """Processa, filtra, pontua e salva uma lista de resultados brutos."""
@@ -184,17 +491,8 @@ def processar_resultados(resultados_raw):
         obj_text = res['objeto']
         obj_norm = normalize_text(obj_text)
 
-        # Verifica match com produtos do catálogo usando fuzzy
-        for p in prods:
-            p_keywords = [k.strip() for k in p.palavras_chave.split(',') if k.strip()]
-            p_keywords.append(p.nome)
-            match_score, kw = best_match_against_keywords(obj_text, p_keywords)
-            if match_score >= 75:
-                bonus = 15 if match_score >= 85 else 10
-                score += bonus
-                matched_tags.append(p.nome)
-
-        # Termos positivos padrão (peso menor, usa texto normalizado)
+        # Termos positivos padrão no OBJETO (peso menor, apenas para score)
+        # NÃO usamos para matched_products - isso será feito nos ITENS
         for t in client.TERMOS_POSITIVOS_PADRAO:
             if normalize_text(t) in obj_norm:
                 score += 0.5
@@ -211,7 +509,8 @@ def processar_resultados(resultados_raw):
                 score += 3
         
         res['match_score'] = round(score, 1)
-        res['matched_products'] = list(set(matched_tags)) # Remove duplicatas
+        # matched_products será preenchido DEPOIS, quando buscarmos os itens reais
+        res['matched_products'] = []
 
         resultados.append(res)
 
@@ -247,9 +546,11 @@ def processar_resultados(resultados_raw):
             session.add(lic)
             session.flush()
 
-            # Buscar itens
+            # Buscar itens e FILTRAR termos negativos
             itens_api = client.buscar_itens(res)
-            for i in itens_api:
+            itens_filtrados = filtrar_itens_negativos(itens_api, client.TERMOS_NEGATIVOS_PADRAO)
+            
+            for i in itens_filtrados:
                 item_db = ItemLicitacao(
                     licitacao_id=lic.id,
                     numero_item=i['numero'],
@@ -261,17 +562,28 @@ def processar_resultados(resultados_raw):
                 )
                 session.add(item_db)
             
+            # Faz match dos itens e coleta os produtos que deram match
             match_itens(session, lic.id)
+            
+            # Busca os produtos que REALMENTE deram match nos ITENS (não no objeto)
+            matched_products_real = []
+            for item in session.query(ItemLicitacao).filter_by(licitacao_id=lic.id).all():
+                if item.produto_match_id and item.produto_match:
+                    matched_products_real.append(item.produto_match.nome)
+            matched_products_real = list(set(matched_products_real))  # Remove duplicatas
+            
             novos += 1
 
-            if res.get('match_score', 0) >= alert_threshold or res.get('matched_products'):
+            # Só adiciona ao alerta se tiver match REAL nos itens OU score alto
+            if matched_products_real or res.get('match_score', 0) >= alert_threshold:
                 high_priority_alerts.append({
                     "orgao": res.get('orgao'),
                     "uf": res.get('uf'),
                     "modalidade": res.get('modalidade'),
                     "match_score": res.get('match_score'),
-                    "matched_products": res.get('matched_products', []),
+                    "matched_products": matched_products_real,  # Agora vem dos ITENS!
                     "dias_restantes": res.get('dias_restantes'),
+                    "data_encerramento_proposta": res.get('data_encerramento_proposta'),
                     "link": res.get('link')
                 })
         else:
@@ -280,36 +592,21 @@ def processar_resultados(resultados_raw):
     session.commit()
     st.success(f"Busca finalizada! {novos} novas licitações importadas.")
 
-    # Notificação automática de alta prioridade
+    # === RELATÓRIO AUTOMÁTICO VIA WHATSAPP ===
     if high_priority_alerts:
-        conf_phone = session.query(Configuracao).filter_by(chave='whatsapp_phone').first()
-        conf_key = session.query(Configuracao).filter_by(chave='whatsapp_apikey').first()
-        phone_val = conf_phone.valor if conf_phone else ""
-        key_val = conf_key.valor if conf_key else ""
-
-        if phone_val and key_val:
-            notifier = WhatsAppNotifier(phone_val, key_val)
-            preview = high_priority_alerts[:5]
-            msg_lines = ["🚨 Novas licitações relevantes encontradas:"]
-            for alert in preview:
-                prazo = f"{alert['dias_restantes']}d" if alert.get('dias_restantes') not in (None, -999) else "prazo não informado"
-                produtos = ", ".join(alert.get('matched_products', [])) or "sem match claro"
-                msg_lines.append(
-                    f"- [{alert['uf']}] {alert['orgao']} ({alert['modalidade']})\n  Score: {alert.get('match_score')}\n  Prazo: {prazo}\n  Produtos: {produtos}\n  {alert['link']}"
-                )
-            if len(high_priority_alerts) > len(preview):
-                msg_lines.append(f"...+{len(high_priority_alerts) - len(preview)} outras.")
-            notifier.enviar_mensagem("\n".join(msg_lines))
+        st.info(f"📱 Enviando relatório com {len(high_priority_alerts)} licitações relevantes...")
+        if enviar_relatorio_completo(high_priority_alerts, session):
+            st.success("✅ Relatório enviado via WhatsApp!")
         else:
-            st.info("Novas licitações prioritárias encontradas. Configure WhatsApp em Configurações para receber alertas.")
+            st.warning("⚠️ Não foi possível enviar relatório. Verifique as configurações de WhatsApp.")
 
     session.close()
 
 # --- PÁGINAS ---
 
-if page == "Meu Catálogo":
+if page == "Catálogo":
     st.header("📦 Catálogo de Produtos")
-    st.info("Cadastre aqui os produtos que a Medcal vende. O sistema usará as 'Palavras-Chave' para encontrar oportunidades.")
+    st.info("Cadastro dos produtos. O sistema usará as 'Palavras-Chave' para encontrar as Licitações.")
     
     session = get_session()
     produtos = session.query(Produto).all()
@@ -318,30 +615,53 @@ if page == "Meu Catálogo":
     data = []
     for p in produtos:
         data.append({
-            "Nome do Produto": p.nome,
-            "Palavras-Chave": p.palavras_chave,
-            "Preço de Custo": p.preco_custo,
-            "Margem (%)": p.margem_minima,
-            "Preço Referência": p.preco_referencia,
-            "Fonte Referência": p.fonte_referencia
+            "nome": p.nome or "",
+            "palavras_chave": p.palavras_chave or "",
+            "preco_custo": float(p.preco_custo or 0.0),
+            "margem_minima": float(p.margem_minima or 30.0),
+            "preco_referencia": float(p.preco_referencia or 0.0),
+            "fonte_referencia": p.fonte_referencia or ""
         })
     
     if not data:
         data = [{
-            "Nome do Produto": "", 
-            "Palavras-Chave": "", 
-            "Preço de Custo": 0.0, 
-            "Margem (%)": 30.0,
-            "Preço Referência": 0.0,
-            "Fonte Referência": ""
+            "nome": "", 
+            "palavras_chave": "", 
+            "preco_custo": 0.0, 
+            "margem_minima": 30.0,
+            "preco_referencia": 0.0,
+            "fonte_referencia": ""
         }]
         
     df = pd.DataFrame(data)
     
-    edited_df = st.data_editor(df, num_rows="dynamic", width="stretch")
+    # Configuração explícita das colunas para evitar erros de renderização
+    edited_df = st.data_editor(
+        df,
+        column_config={
+            "nome": st.column_config.TextColumn("Nome do Produto", required=True, width="medium"),
+            "palavras_chave": st.column_config.TextColumn("Palavras-Chave", help="Separadas por vírgula", width="medium"),
+            "preco_custo": st.column_config.NumberColumn("Preço de Custo", min_value=0.0, format="R$ %.2f", required=True, width="small"),
+            "margem_minima": st.column_config.NumberColumn("Margem (%)", min_value=0.0, format="%.1f%%", width="small"),
+            "preco_referencia": st.column_config.NumberColumn("Preço Referência", min_value=0.0, format="R$ %.2f", width="small"),
+            "fonte_referencia": st.column_config.TextColumn("Fonte Referência", width="small")
+        },
+        num_rows="dynamic",
+        use_container_width=True,
+        key="editor_catalogo"
+    )
     
-    if st.button("💾 Salvar Alterações"):
-        salvar_produtos(edited_df)
+    if st.button("💾 Salvar Alterações", key="btn_salvar_catalogo"):
+        # Renomeia colunas para compatibilidade com a função de salvar existente
+        df_to_save = edited_df.rename(columns={
+            "nome": "Nome do Produto",
+            "palavras_chave": "Palavras-Chave",
+            "preco_custo": "Preço de Custo",
+            "margem_minima": "Margem (%)",
+            "preco_referencia": "Preço Referência",
+            "fonte_referencia": "Fonte Referência"
+        })
+        salvar_produtos(df_to_save)
 
 elif page == "Buscar Licitações":
     st.header("🔍 Buscar Novas Oportunidades")
@@ -354,6 +674,12 @@ elif page == "Buscar Licitações":
     busca_ampla = st.checkbox("🌍 Modo Varredura Total (Ignorar filtros de palavras-chave)",
                               help="Se marcado, traz TUDO o que foi publicado, sem filtrar por termos médicos. Útil para garantir que nada passou batido.")
 
+    st.markdown("#### Fontes de Busca")
+    
+    # --- PNCP (Fonte Principal) ---
+    use_pncp = st.checkbox("🏛️ PNCP (Portal Nacional de Contratações Públicas)", value=True, 
+                           help="Fonte oficial do Governo Federal. Pregões e Dispensas de todos os estados.")
+    
     st.markdown("#### Fontes Extras - Diários Oficiais Municipais")
     
     # --- FEMURN (RN) ---
@@ -454,7 +780,7 @@ elif page == "Buscar Licitações":
     # Filtro de futuro agora é MANDATÓRIO
     filtro_futuro = True 
 
-    if st.button("🚀 Iniciar Varredura Completa (PNCP + Selecionados)"):
+    if st.button("🚀 Iniciar Varredura Completa"):
         client = PNCPClient()
         
         # Pega termos do catálogo para filtrar a busca inicial
@@ -470,7 +796,7 @@ elif page == "Buscar Licitações":
         if not all_keywords and not busca_ampla:
             st.warning("Seu catálogo está vazio! Cadastre produtos para gerar palavras-chave de busca.")
         else:
-            with st.status("Buscando no PNCP e Fontes Extras...", expanded=True) as status:
+            with st.status("Buscando licitações compatíveis", expanded=True) as status:
                 
                 if busca_ampla:
                     st.write("⚠️ MODO VARREDURA: Buscando todas as licitações (sem filtro de termos)...")
@@ -479,8 +805,15 @@ elif page == "Buscar Licitações":
                     termos_busca = client.TERMOS_POSITIVOS_PADRAO
                     st.write(f"Filtrando por {len(termos_busca)} termos (Apenas Padrão Medcal)...")
                 
-                # Busca PNCP
-                resultados_raw = client.buscar_oportunidades(dias, estados, termos_positivos=termos_busca)
+                # Inicializa lista de resultados
+                resultados_raw = []
+                
+                # Busca PNCP (apenas se selecionado)
+                if use_pncp:
+                    st.write("🏛️ Buscando no PNCP (Portal Nacional)...")
+                    resultados_raw = client.buscar_oportunidades(dias, estados, termos_positivos=termos_busca)
+                else:
+                    st.write("⏭️ PNCP não selecionado, pulando...")
                 
                 # Busca Fontes Extras (se marcadas)
                 if use_femurn:
@@ -530,6 +863,47 @@ elif page == "Buscar Licitações":
                 processar_resultados(resultados_raw)
         
     st.divider()
+    
+    # === BOTÃO MANUAL PARA ENVIAR RELATÓRIO ===
+    st.markdown("#### 📱 Relatório WhatsApp")
+    col_rel1, col_rel2 = st.columns([3, 1])
+    with col_rel1:
+        st.caption("Envia um relatório compacto com todas as licitações relevantes do banco.")
+    with col_rel2:
+        if st.button("📤 Enviar Relatório", key="btn_enviar_relatorio"):
+            session = get_session()
+            # Busca licitações com prazo aberto e que tenham matches
+            licitacoes_db = session.query(Licitacao).filter(
+                Licitacao.data_encerramento_proposta >= datetime.now()
+            ).order_by(Licitacao.data_encerramento_proposta.asc()).all()
+            
+            # Monta lista no formato esperado pela função de relatório
+            lics_para_relatorio = []
+            for lic in licitacoes_db:
+                # Verifica se tem itens com match
+                itens_match = [i for i in lic.itens if i.produto_match_id is not None]
+                matched_products = list(set([i.produto_match.nome for i in itens_match])) if itens_match else []
+                
+                lics_para_relatorio.append({
+                    "orgao": lic.orgao,
+                    "uf": lic.uf,
+                    "modalidade": lic.modalidade,
+                    "data_encerramento_proposta": lic.data_encerramento_proposta.isoformat() if lic.data_encerramento_proposta else None,
+                    "matched_products": matched_products,
+                    "link": lic.link
+                })
+            
+            if lics_para_relatorio:
+                if enviar_relatorio_completo(lics_para_relatorio, session):
+                    st.success(f"✅ Relatório com {len(lics_para_relatorio)} licitações enviado!")
+                else:
+                    st.error("❌ Erro ao enviar. Verifique as configurações de WhatsApp.")
+            else:
+                st.warning("Nenhuma licitação com prazo aberto encontrada.")
+            
+            session.close()
+    
+    st.divider()
     with st.expander("Limpeza do banco de dados"):
         st.warning("Isso apagará todas as licitações importadas.")
         if st.button("Limpar Histórico de Licitações"):
@@ -540,133 +914,6 @@ elif page == "Buscar Licitações":
             session.close()
             st.success("Banco de dados limpo!")
             st.rerun()
-
-    st.divider()
-    st.subheader("Buscar por ID PNCP (debug de edital específico)")
-    pncp_id_input = st.text_input("Informe o PNCP ID ou URL (ex: 08308470000129-2025-24 ou link do edital)")
-    if st.button("🔍 Buscar e importar este edital"):
-        client = PNCPClient()
-        cnpj = ano = seq = None
-        text = pncp_id_input.strip()
-        if "/" in text:
-            parts = text.strip().split("/")
-            if len(parts) >= 3:
-                cnpj, ano, seq = parts[-3], parts[-2], parts[-1]
-        elif "-" in text:
-            parts = text.split("-")
-            if len(parts) == 3:
-                cnpj, ano, seq = parts
-        if not (cnpj and ano and seq):
-            st.error("Formato inválido. Use CNPJ-ANO-SEQ ou URL do PNCP.")
-        else:
-            res = client.buscar_por_id(cnpj, ano, seq)
-            if not res:
-                st.error("Não foi possível buscar este edital.")
-            else:
-                session = get_session()
-                exists = session.query(Licitacao).filter_by(pncp_id=res['pncp_id']).first()
-                if exists:
-                    st.info("Já está no banco.")
-                else:
-                    lic = Licitacao(
-                        pncp_id=res['pncp_id'],
-                        orgao=res['orgao'],
-                        uf=res['uf'],
-                        modalidade=res['modalidade'],
-                        data_sessao=safe_parse_date(res.get('data_sessao')),
-                        data_publicacao=safe_parse_date(res.get('data_publicacao')),
-                        data_inicio_proposta=safe_parse_date(res.get('data_inicio_proposta')),
-                        data_encerramento_proposta=safe_parse_date(res.get('data_encerramento_proposta')),
-                        objeto=res['objeto'],
-                        link=res['link']
-                    )
-                    session.add(lic)
-                    session.flush()
-                    itens_api = client.buscar_itens(res)
-                    for i in itens_api:
-                        item_db = ItemLicitacao(
-                            licitacao_id=lic.id,
-                            numero_item=i['numero'],
-                            descricao=i['descricao'],
-                            quantidade=i['quantidade'],
-                            unidade=i['unidade'],
-                            valor_estimado=i['valor_estimado'],
-                            valor_unitario=i['valor_unitario']
-                        )
-                        session.add(item_db)
-                    match_itens(session, lic.id)
-                    session.commit()
-                    session.close()
-                    st.success("Edital importado com sucesso! Veja no Dashboard.")
-
-elif page == "Gestão (Kanban)":
-    st.header("📋 Gestão de Licitações (Kanban)")
-    
-    session = get_session()
-    
-    # Filtros
-    col_f1, col_f2 = st.columns(2)
-    with col_f1:
-        filtro_uf = st.multiselect("Filtrar por UF", ['RN', 'PB', 'PE', 'AL', 'CE', 'BA'])
-    with col_f2:
-        filtro_texto = st.text_input("Buscar no Objeto/Órgão")
-        
-    query = session.query(Licitacao).filter(Licitacao.status != 'Ignorada') # Não mostra ignoradas no Kanban principal
-    if filtro_uf:
-        query = query.filter(Licitacao.uf.in_(filtro_uf))
-    if filtro_texto:
-        query = query.filter(Licitacao.objeto.ilike(f"%{filtro_texto}%") | Licitacao.orgao.ilike(f"%{filtro_texto}%"))
-        
-    licitacoes = query.all()
-    
-    # Definição das colunas do Kanban
-    cols = st.columns(5)
-    status_list = ["Nova", "Em Análise", "Participar", "Ganha", "Perdida"]
-    status_colors = ["blue", "orange", "green", "gold", "red"]
-    
-    for i, status in enumerate(status_list):
-        with cols[i]:
-            st.markdown(f"### :{status_colors[i]}[{status}]")
-            items = [l for l in licitacoes if l.status == status]
-            st.write(f"Total: {len(items)}")
-            
-            for lic in items:
-                # KANBAN CARD STYLE
-                st.markdown(f"""
-                <div class="css-card" style="padding: 16px; margin-bottom: 12px;">
-                    <div style="font-weight: 600; font-size: 14px; margin-bottom: 4px;">{lic.orgao}</div>
-                    <div style="font-size: 12px; color: #86868b; margin-bottom: 8px;">{lic.uf} • {lic.modalidade}</div>
-                    <div style="font-size: 12px; color: #1d1d1f;">{lic.objeto[:60]}...</div>
-                </div>
-                """, unsafe_allow_html=True)
-                
-                with st.expander("Ações & Detalhes"):
-                    st.caption(f"📅 {lic.data_sessao.strftime('%d/%m') if lic.data_sessao else '-'}")
-                    st.write(f"[Link]({lic.link})")
-                    
-                    # Itens
-                    if lic.itens:
-                        st.markdown("**Itens:**")
-                        for item in lic.itens:
-                            match_icon = "✅" if item.produto_match_id else "📦"
-                            st.caption(f"{match_icon} {item.quantidade}x {item.descricao}")
-
-                    # Comentários
-                    comentario = st.text_area("Notas", value=lic.comentarios or "", key=f"com_{lic.id}", height=68)
-                    if st.button("Salvar", key=f"btn_com_{lic.id}"):
-                        lic.comentarios = comentario
-                        session.commit()
-                        st.success("Salvo!")
-                        st.rerun()
-                        
-                    # Mover Status
-                    novo_status = st.selectbox("Mover:", status_list + ["Ignorada"], index=status_list.index(status) if status in status_list else 0, key=f"st_{lic.id}")
-                    if novo_status != lic.status:
-                        lic.status = novo_status
-                        session.commit()
-                        st.rerun()
-
-    session.close()
 
 elif page == "🧠 Análise de IA":
     st.header("🧠 Análise Inteligente de Licitações")
@@ -836,45 +1083,58 @@ elif page == "Dashboard":
     if not licitacoes:
         st.info("Nenhuma licitação no banco. Vá em 'Buscar Licitações' para começar.")
     else:
+        st.write(f"Mostrando {len(licitacoes)} licitações ordenadas por relevância.")
+        
         for lic in licitacoes:
             # Contar itens com match
             total_itens = len(lic.itens)
-            matches = sum(1 for i in lic.itens if i.produto_match_id is not None)
+            itens_com_match = [i for i in lic.itens if i.produto_match_id is not None]
+            matches = len(itens_com_match)
+            
+            # Extrair nomes dos produtos (únicos)
+            matched_names = sorted(list(set([i.produto_match.nome for i in itens_com_match])))
             
             # Ícone e cor baseados no match
             if matches > 0:
                 icon = "🔥" # Fogo para alta prioridade
-                label_match = f":green[**{matches} itens do seu catálogo!**]"
+                names_str = ", ".join(matched_names[:3])
+                if len(matched_names) > 3:
+                    names_str += "..."
+                match_info = f"✅ {names_str} ({matches} itens)"
             elif lic.modalidade == "Diário Oficial" or lic.modalidade == "Portal Externo":
                 icon = "📢"
-                label_match = "Aviso de Edital (Verificar PDF/Link)"
+                match_info = "Aviso de Edital"
             else:
                 icon = "⚠️"
-                label_match = f"{matches}/{total_itens} itens compatíveis"
+                match_info = "Sem match direto"
             
-            # CARD STYLE
-            with st.container():
-                st.markdown(f"""
-                <div class="css-card">
-                    <div class="card-header">{lic.modalidade} • {lic.uf}</div>
-                    <div class="card-title">{lic.orgao}</div>
-                    <div class="card-subtitle">Sessão: {lic.data_sessao.strftime('%d/%m/%Y') if lic.data_sessao else 'N/A'}</div>
-                    <div style="margin-bottom: 10px;">{lic.objeto[:200]}...</div>
-                </div>
-                """, unsafe_allow_html=True)
+            # Data formatada
+            data_sessao_fmt = lic.data_sessao.strftime('%d/%m/%Y') if lic.data_sessao else "N/A"
+            
+            # Título do Expander (Unificado)
+            expander_title = f"{icon} [{lic.uf}] {lic.orgao} ({lic.modalidade}) — {match_info}"
+            
+            with st.expander(expander_title):
+                # Cabeçalho interno com informações principais
+                col_header, col_dates = st.columns([3, 1])
+                with col_header:
+                    st.markdown(f"**Objeto:** {lic.objeto}")
+                    st.caption(f"ID PNCP: {lic.pncp_id or 'N/A'}")
+                with col_dates:
+                    st.markdown(f"**📅 Sessão:** {data_sessao_fmt}")
+                    st.link_button("🔗 Abrir Link", lic.link)
+
+                st.divider()
                 
-                with st.expander("Ver Detalhes e Itens"):
-                    st.write(f"**Link:** [Acessar PNCP]({lic.link})")
-                    
-                    # Tabela de Itens
+                # Tabela de Itens
+                if lic.itens:
+                    st.markdown("###### 📦 Itens da Licitação")
                     data_itens = []
                     valor_total_proposta = 0
                     
                     for item in lic.itens:
                         match_nome = "❌ Sem Match"
                         custo = 0
-                        preco_venda = 0
-                        lucro = 0
                         preco_ref = 0
                         fonte_ref = "-"
                         v_unit_edital = item.valor_unitario if item.valor_unitario else 0
@@ -885,7 +1145,6 @@ elif page == "Dashboard":
                             custo = item.produto_match.preco_custo
                             margem = item.produto_match.margem_minima / 100
                             preco_venda = custo * (1 + margem)
-                            lucro = (preco_venda - custo) * item.quantidade
                             valor_total_proposta += preco_venda * item.quantidade
                             
                             preco_ref = item.produto_match.preco_referencia
@@ -896,556 +1155,598 @@ elif page == "Dashboard":
                         
                         data_itens.append({
                             "Item": item.numero_item,
-                            "Descrição Edital": item.descricao,
+                            "Descrição": item.descricao,
                             "Qtd": item.quantidade,
                             "Unidade": item.unidade,
-                            "V. Unit. Edital": f"R$ {v_unit_edital:,.2f}",
-                            "Meu Custo": f"R$ {custo:,.2f}" if custo > 0 else "-",
-                            "Ref. Mercado": f"R$ {preco_ref:,.2f} ({fonte_ref})" if preco_ref > 0 else "-",
-                            "Dif. Custo %": f"{diff_percent:+.1f}%" if diff_percent != 0 else "-",
+                            "Valor Unit. (Edital)": f"R$ {v_unit_edital:,.2f}",
                             "Match": match_nome
                         })
                         
-                    st.dataframe(pd.DataFrame(data_itens), width=None, use_container_width=True)
+                    st.dataframe(
+                        pd.DataFrame(data_itens), 
+                        use_container_width=True,
+                        column_config={
+                            "Item": st.column_config.NumberColumn(width="small"),
+                            "Descrição": st.column_config.TextColumn(width="large"),
+                        },
+                        hide_index=True
+                    )
                     
-                    col_a, col_b = st.columns(2)
-                    with col_a:
-                        if matches > 0:
-                            st.metric("Valor Total da Proposta (Itens com Match)", f"R$ {valor_total_proposta:,.2f}")
-                        else:
-                            st.warning("Nenhum item deste edital corresponde aos produtos do seu catálogo.")
-                    
-                    with col_b:
-                        if st.button("📄 Ver Arquivos do Edital", key=f"btn_arq_{lic.id}"):
+                    if matches > 0:
+                        st.success(f"💰 Potencial de Proposta: R$ {valor_total_proposta:,.2f} (Baseado no seu custo + margem)")
+                else:
+                    st.info("Nenhum item detalhado encontrado.")
+                
+                # Ações Extras
+                st.markdown("---")
+                col_act1, col_act2, col_act3 = st.columns(3)
+                
+                with col_act1:
+                    if st.button("📂 Ver Arquivos Anexos", key=f"btn_arq_{lic.id}"):
+                        with st.spinner("Buscando arquivos..."):
                             client = PNCPClient()
-                            # Reconstrói dict mínimo para buscar arquivos
-                            lic_dict = {
-                                "cnpj": lic.pncp_id.split('-')[0],
-                                "ano": lic.pncp_id.split('-')[1],
-                                "seq": lic.pncp_id.split('-')[2]
-                            }
-                            arquivos = client.buscar_arquivos(lic_dict)
-                            
-                            if arquivos:
-                                st.write("**Arquivos Disponíveis:**")
-                                for arq in arquivos:
-                                    st.markdown(f"- [{arq['titulo']}]({arq['url']})")
-                            else:
-                                st.info("Nenhum arquivo encontrado.")
-                                
-                        st.divider()
-                        st.markdown("### 🧠 Inteligência Artificial")
-                        
-                        # Seletor de Item para Estimativa
-                        item_opts = {f"{i.numero_item} - {i.descricao[:50]}...": i.descricao for i in lic.itens}
-                        if item_opts:
-                            selected_item_label = st.selectbox("Selecione um item para estimar preço de mercado:", list(item_opts.keys()), key=f"sel_item_{lic.id}")
-                            
-                            # Botão de IA
-                            if st.button("✨ Gerar Resumo IA", key=f"btn_ai_{lic.id}"):
-                                session = get_session()
-                                api_key = session.query(Configuracao).filter_by(chave='gemini_api_key').first()
-                                session.close()
-                                
-                                if api_key and api_key.valor:
-                                    configure_genai(api_key.valor)
-                                    with st.spinner("A IA está analisando o edital..."):
-                                        # summarize_bidding is not imported, using SmartAnalyzer directly or implementing inline
-                                        # For now, let's use SmartAnalyzer logic if available or just a placeholder if function missing
-                                        # Assuming summarize_bidding was a placeholder in previous code, replacing with SmartAnalyzer
-                                        analyzer = SmartAnalyzer()
-                                        texto_analise = f"OBJETO: {lic.objeto}\n\nITENS:\n"
-                                        for item in lic.itens:
-                                            texto_analise += f"- {item.quantidade} {item.unidade} de {item.descricao}\n"
-                                        analise = analyzer.analisar_viabilidade(texto_analise)
-                                        st.markdown("### 🤖 Análise da IA")
-                                        st.write(analise.get('resumo_objeto'))
-                                        st.write(f"**Score:** {analise.get('score_viabilidade')}")
+                            # Reconstrói dict mínimo
+                            parts = lic.pncp_id.split('-') if lic.pncp_id else []
+                            if len(parts) >= 3:
+                                lic_dict = {"cnpj": parts[0], "ano": parts[1], "seq": parts[2]}
+                                arquivos = client.buscar_arquivos(lic_dict)
+                                if arquivos:
+                                    st.write("**Arquivos:**")
+                                    for arq in arquivos:
+                                        st.markdown(f"- [{arq['titulo']}]({arq['url']})")
                                 else:
-                                    st.error("Configure a API Key do Gemini na aba Configurações primeiro!")
+                                    st.warning("Nenhum arquivo anexado encontrado no PNCP.")
+                            else:
+                                st.error("ID PNCP inválido para busca de arquivos.")
+
+                with col_act2:
+                    if st.button("🧠 Análise de IA (Gemini)", key=f"btn_ai_{lic.id}"):
+                        # Redireciona ou executa análise inline
+                        st.info("Para análise detalhada, use a aba '🧠 Análise de IA' no menu lateral.")
+
+                with col_act3:
+                    if st.button("📱 Enviar no WhatsApp", key=f"btn_wpp_{lic.id}"):
+                        session = get_session()
+                        conf_phone = session.query(Configuracao).filter_by(chave='whatsapp_phone').first()
+                        conf_key = session.query(Configuracao).filter_by(chave='whatsapp_apikey').first()
+                        session.close()
+
+                        if not (conf_phone and conf_key and conf_phone.valor and conf_key.valor):
+                            st.error("Configure o WhatsApp na aba Configurações!")
+                        else:
+                            # Monta mensagem
+                            itens_str = ""
+                            # Prioriza itens com match para destacar o motivo do interesse
+                            target_list = [i for i in lic.itens if i.produto_match_id]
+                            if not target_list: target_list = lic.itens
+                            
+                            for i in target_list[:5]:
+                                itens_str += f"- {i.descricao[:60]}...\n"
+                            if len(target_list) > 5:
+                                itens_str += f"... (+{len(target_list)-5} itens)"
+
+                            msg = f"🚀 *Oportunidade Selecionada*\n\n"
+                            msg += f"🏛 *{lic.orgao}* ({lic.uf})\n"
+                            msg += f"📋 {lic.modalidade}\n\n"
+                            msg += f"📦 *Destaques:*\n{itens_str}\n"
+                            msg += f"🔗 {lic.link}"
+
+                            notifier = WhatsAppNotifier(conf_phone.valor, conf_key.valor)
+                            if notifier.enviar_mensagem(msg):
+                                st.toast("Enviado com sucesso!", icon="✅")
+                            else:
+                                st.error("Erro ao enviar mensagem.")
 
 elif page == "💰 Gestão Financeira":
-    st.header("💰 Gestão Financeira & Auditoria de Extratos")
-    st.info("Gerencie suas contas bancárias, importe extratos e faça auditoria automática de faturas pagas.")
+    st.header("💰 Gestão Financeira - Extratos Banco do Brasil")
+    st.info("Importe e visualize seus extratos bancários (Formato Excel BB).")
 
-    # Sub-navegação com tabs
-    tab1, tab2, tab3, tab4, tab5 = st.tabs(["📊 Dashboard", "🏦 Contas", "📤 Extratos", "📄 Faturas", "🔍 Conciliação"])
+    session = get_finance_session()
 
-    session = get_session()
-
-    # ==================== TAB 1: DASHBOARD ====================
-    with tab1:
-        st.subheader("📊 Visão Geral Financeira")
-
-        # Indicadores principais
-        col1, col2, col3, col4 = st.columns(4)
-
-        # Total de contas
-        total_contas = session.query(ContaBancaria).filter_by(ativo=True).count()
-
-        # Faturas pendentes
-        faturas_pendentes = session.query(Fatura).filter(Fatura.status.in_(['PENDENTE', 'PARCIAL'])).all()
-        total_pendente = sum(f.valor_restante for f in faturas_pendentes)
-        qtd_pendentes = len(faturas_pendentes)
-
-        # Faturas vencidas
-        faturas_vencidas = [f for f in faturas_pendentes if f.esta_vencida]
-        total_vencido = sum(f.valor_restante for f in faturas_vencidas)
-        qtd_vencidas = len(faturas_vencidas)
-
-        # Extratos não conciliados
-        extratos_pendentes = session.query(ExtratoBancario).filter_by(conciliado=False).count()
-
-        with col1:
-            st.metric("Contas Ativas", total_contas)
-        with col2:
-            st.metric("Faturas Pendentes", f"{qtd_pendentes}", f"R$ {total_pendente:,.2f}")
-        with col3:
-            st.metric("Faturas Vencidas", f"{qtd_vencidas}", f"R$ {total_vencido:,.2f}", delta_color="inverse")
-        with col4:
-            st.metric("Extratos Pendentes", extratos_pendentes)
-
-        st.divider()
-
-        # Próximos vencimentos
-        col_a, col_b = st.columns(2)
-
-        with col_a:
-            st.markdown("### 📅 Próximos Vencimentos (15 dias)")
-            from datetime import timedelta
-            hoje = datetime.now().date()
-            limite = hoje + timedelta(days=15)
-
-            proximas = session.query(Fatura).filter(
-                Fatura.status.in_(['PENDENTE', 'PARCIAL']),
-                Fatura.data_vencimento.between(hoje, limite)
-            ).order_by(Fatura.data_vencimento).all()
-
-            if proximas:
-                for fat in proximas:
-                    dias_ate = (fat.data_vencimento - hoje).days
-                    cor = "🔴" if dias_ate <= 3 else "🟡" if dias_ate <= 7 else "🟢"
-                    st.write(f"{cor} **{fat.fornecedor_cliente}** - R$ {fat.valor_restante:,.2f}")
-                    st.caption(f"Vence em {dias_ate} dias ({fat.data_vencimento.strftime('%d/%m/%Y')})")
-            else:
-                st.success("Nenhum vencimento próximo!")
-
-        with col_b:
-            st.markdown("### 🚨 Faturas Vencidas")
-            if faturas_vencidas:
-                for fat in faturas_vencidas[:10]:
-                    dias_vencido = (hoje - fat.data_vencimento).days
-                    st.write(f"🔴 **{fat.fornecedor_cliente}** - R$ {fat.valor_restante:,.2f}")
-                    st.caption(f"Vencida há {dias_vencido} dias ({fat.data_vencimento.strftime('%d/%m/%Y')})")
-            else:
-                st.success("Nenhuma fatura vencida!")
-
-    # ==================== TAB 2: CONTAS BANCÁRIAS ====================
-    with tab2:
-        st.subheader("🏦 Cadastro de Contas Bancárias")
-
-        # Formulário de nova conta
-        with st.expander("➕ Adicionar Nova Conta", expanded=False):
-            with st.form("form_nova_conta"):
-                col1, col2 = st.columns(2)
-                with col1:
-                    banco = st.text_input("Banco *", placeholder="Ex: Banco do Brasil")
-                    agencia = st.text_input("Agência *", placeholder="1234-5")
-                    conta = st.text_input("Conta *", placeholder="12345-6")
-                with col2:
-                    tipo_conta = st.selectbox("Tipo de Conta", ["Corrente", "Poupança", "Investimento"])
-                    nome_conta = st.text_input("Nome Amigável", placeholder="Ex: Conta Principal")
-                    saldo_inicial = st.number_input("Saldo Inicial (opcional)", value=0.0, step=100.0)
-
-                if st.form_submit_button("💾 Salvar Conta"):
-                    if banco and agencia and conta:
-                        nova_conta = ContaBancaria(
-                            banco=banco,
-                            agencia=agencia,
-                            conta=conta,
-                            tipo_conta=tipo_conta,
-                            nome_conta=nome_conta or f"{banco} - {conta}",
-                            saldo_atual=saldo_inicial
-                        )
-                        session.add(nova_conta)
-                        session.commit()
-                        st.success(f"✅ Conta {nome_conta or conta} cadastrada!")
-                        st.rerun()
-                    else:
-                        st.error("Preencha todos os campos obrigatórios!")
-
-        st.divider()
-
-        # Lista de contas
-        contas = session.query(ContaBancaria).all()
-        if contas:
-            for conta in contas:
-                status_icon = "✅" if conta.ativo else "❌"
-                st.markdown(f"""
-                <div class="css-card">
-                    <div class="card-title">{status_icon} {conta.nome_conta or conta.banco}</div>
-                    <div class="card-subtitle">{conta.banco} - Ag: {conta.agencia} | C/C: {conta.conta}</div>
-                    <div style="margin-top: 10px; font-size: 18px; font-weight: 600;">R$ {conta.saldo_atual:,.2f}</div>
-                </div>
-                """, unsafe_allow_html=True)
-
-                col_btn1, col_btn2, col_btn3 = st.columns([1, 1, 3])
-                with col_btn1:
-                    if st.button("🗑️ Excluir", key=f"del_conta_{conta.id}"):
-                        session.delete(conta)
-                        session.commit()
-                        st.rerun()
-                with col_btn2:
-                    novo_status = not conta.ativo
-                    label = "Ativar" if not conta.ativo else "Desativar"
-                    if st.button(label, key=f"toggle_{conta.id}"):
-                        conta.ativo = novo_status
-                        session.commit()
-                        st.rerun()
-        else:
-            st.warning("Nenhuma conta cadastrada ainda.")
-
-    # ==================== TAB 3: EXTRATOS ====================
-    with tab3:
-        st.subheader("📤 Upload de Extratos Bancários")
-
-        # Selecionar conta
-        contas_ativas = session.query(ContaBancaria).filter_by(ativo=True).all()
-        if not contas_ativas:
-            st.warning("Cadastre pelo menos uma conta bancária antes de importar extratos!")
-        else:
-            conta_selecionada = st.selectbox(
-                "Selecione a Conta",
-                contas_ativas,
-                format_func=lambda x: f"{x.nome_conta} ({x.banco})"
-            )
-
-            st.info("📁 Formatos aceitos: CSV, Excel (.xlsx, .xls), OFX")
-
-            uploaded_file = st.file_uploader("Selecione o arquivo de extrato", type=['csv', 'xlsx', 'xls', 'ofx'])
-
+    # === SEÇÃO DE UPLOAD ===
+    col_up1, col_up2 = st.columns(2)
+    
+    with col_up1:
+        with st.expander("📤 Importar Arquivo Excel", expanded=False):
+            uploaded_file = st.file_uploader("Selecione o arquivo Excel (.xlsx)", type=['xlsx'])
+            substituir_arquivo = st.checkbox("🔄 Substituir dados deste mês (Correção)", value=True, help="Marque para apagar os dados antigos desse mês e importar tudo de novo limpo.")
+            
             if uploaded_file:
-                try:
-                    parser = ExtratoParser()
-                    lancamentos = parser.parse_file(uploaded_file, uploaded_file.name, conta_selecionada.id)
+                if st.button("Processar Arquivo"):
+                    with st.spinner("Lendo arquivo..."):
+                        # Salva arquivo temporário
+                        temp_path = f"temp_extrato_{int(time.time())}.xlsx"
+                        with open(temp_path, "wb") as f:
+                            f.write(uploaded_file.getbuffer())
+                        
+                        try:
+                            stats = importar_extrato_bb(temp_path, session, substituir=substituir_arquivo)
+                            st.success(f"✅ Importação concluída! {stats['importados']} lançamentos processados.")
+                            if stats['duplicados'] > 0:
+                                st.warning(f"{stats['duplicados']} lançamentos duplicados mantidos/ignorados.")
+                            if stats['erros']:
+                                st.error(f"Erros: {stats['erros']}")
+                        except Exception as e:
+                            st.error(f"Erro ao processar: {str(e)}")
+                        finally:
+                            if os.path.exists(temp_path):
+                                os.remove(temp_path)
+                                
+                    st.rerun()
 
-                    st.success(f"✅ Arquivo lido com sucesso! {len(lancamentos)} lançamentos encontrados.")
-
-                    # Preview
-                    st.write("### Pré-visualização dos Lançamentos")
-                    df_preview = pd.DataFrame(lancamentos)
-                    if not df_preview.empty:
-                        df_preview['valor'] = df_preview['valor'].apply(lambda x: f"R$ {x:,.2f}")
-                        st.dataframe(df_preview.head(20), use_container_width=True)
-
-                    # Erros?
-                    if parser.erros:
-                        with st.expander("⚠️ Avisos e Erros"):
-                            for erro in parser.erros:
-                                st.warning(erro)
-
-                    # Botão de importação
-                    if st.button("✅ Confirmar e Importar"):
-                        novos = 0
-                        duplicados = 0
-
-                        for lanc in lancamentos:
-                            # Verifica duplicata
-                            existe = session.query(ExtratoBancario).filter_by(
-                                hash_lancamento=lanc['hash_lancamento']
-                            ).first()
-
-                            if not existe:
-                                # Categoriza automaticamente
-                                lanc['categoria'] = parser.categorizar_lancamento(lanc['descricao'])
-
-                                extrato = ExtratoBancario(**lanc)
-                                session.add(extrato)
-                                novos += 1
-                            else:
-                                duplicados += 1
-
-                        session.commit()
-                        st.success(f"✅ Importação concluída! {novos} novos lançamentos, {duplicados} duplicados ignorados.")
-                        st.rerun()
-
-                except Exception as e:
-                    st.error(f"❌ Erro ao processar arquivo: {str(e)}")
-
-        st.divider()
-
-        # Lista de extratos
-        st.subheader("📋 Extratos Importados")
-
-        if contas_ativas:
-            conta_filtro = st.selectbox(
-                "Filtrar por Conta:",
-                [None] + contas_ativas,
-                format_func=lambda x: "Todas" if x is None else f"{x.nome_conta}"
-            )
-
-            query_extratos = session.query(ExtratoBancario)
-            if conta_filtro:
-                query_extratos = query_extratos.filter_by(conta_id=conta_filtro.id)
-
-            extratos = query_extratos.order_by(ExtratoBancario.data_lancamento.desc()).limit(100).all()
-
-            if extratos:
-                for extrato in extratos:
-                    conciliado_icon = "✅" if extrato.conciliado else "⏳"
-                    tipo_icon = "➕" if extrato.valor > 0 else "➖"
-                    cor = "green" if extrato.valor > 0 else "red"
-
-                    st.markdown(f"""
-                    <div style="padding: 8px; margin: 4px 0; border-left: 4px solid {cor}; background: #f8f9fa;">
-                        {conciliado_icon} {tipo_icon} <strong>R$ {abs(extrato.valor):,.2f}</strong> - {extrato.descricao[:60]}
-                        <br><small>{extrato.data_lancamento.strftime('%d/%m/%Y')} | {extrato.categoria or 'SEM CATEGORIA'}</small>
-                    </div>
-                    """, unsafe_allow_html=True)
+    with col_up2:
+        # Lógica Inteligente: Sugerir próximo mês
+        ultimo_lanc = session.query(ExtratoBB).order_by(ExtratoBB.dt_balancete.desc()).first()
+        lbl_expander = "📋 Importar Texto (Copiar/Colar)"
+        msg_ajuda = "Copie as linhas do Excel ou do Internet Banking e cole abaixo."
+        
+        if ultimo_lanc:
+            ud = ultimo_lanc.dt_balancete
+            if ud.month == 12:
+                prox_mes = 1
+                prox_ano = ud.year + 1
             else:
-                st.info("Nenhum extrato importado ainda.")
+                prox_mes = ud.month + 1
+                prox_ano = ud.year
+                
+            meses_pt = {
+                1:'Janeiro', 2:'Fevereiro', 3:'Março', 4:'Abril', 5:'Maio', 6:'Junho', 
+                7:'Julho', 8:'Agosto', 9:'Setembro', 10:'Outubro', 11:'Novembro', 12:'Dezembro'
+            }
+            lbl_expander = f"📋 Importar: {meses_pt[prox_mes]}/{prox_ano} (Copiar/Colar)"
+            msg_ajuda = f"O sistema parou em **{ud.strftime('%d/%m/%Y')}**. Cole abaixo os lançamentos de **{meses_pt[prox_mes]}/{prox_ano}**."
 
-    # ==================== TAB 4: FATURAS ====================
-    with tab4:
-        st.subheader("📄 Cadastro de Faturas")
-
-        # Formulário de nova fatura
-        with st.expander("➕ Adicionar Nova Fatura", expanded=False):
-            with st.form("form_nova_fatura"):
-                tipo = st.radio("Tipo", ["PAGAR", "RECEBER"], horizontal=True)
-
-                col1, col2 = st.columns(2)
-                with col1:
-                    fornecedor = st.text_input("Fornecedor/Cliente *", placeholder="Nome da empresa")
-                    descricao = st.text_input("Descrição *", placeholder="Ex: Nota Fiscal 1234")
-                    numero_nota = st.text_input("Número da Nota/Documento", placeholder="Opcional")
-                    valor = st.number_input("Valor Total *", min_value=0.01, step=10.0)
-                with col2:
-                    data_emissao = st.date_input("Data de Emissão", value=datetime.now())
-                    data_vencimento = st.date_input("Data de Vencimento *", value=datetime.now())
-                    forma_pagamento = st.selectbox("Forma de Pagamento",
-                                                    ["", "PIX", "TED", "DOC", "Boleto", "Cartão", "Dinheiro", "Cheque"])
-                    observacoes = st.text_area("Observações", placeholder="Detalhes adicionais...")
-
-                if st.form_submit_button("💾 Salvar Fatura"):
-                    if fornecedor and descricao and valor > 0:
-                        nova_fatura = Fatura(
-                            tipo=tipo,
-                            fornecedor_cliente=fornecedor,
-                            descricao=descricao,
-                            numero_nota=numero_nota,
-                            valor_original=valor,
-                            data_emissao=data_emissao,
-                            data_vencimento=data_vencimento,
-                            forma_pagamento=forma_pagamento,
-                            observacoes=observacoes
-                        )
-                        session.add(nova_fatura)
-                        session.commit()
-                        st.success(f"✅ Fatura cadastrada!")
-                        st.rerun()
-                    else:
-                        st.error("Preencha todos os campos obrigatórios!")
-
-        st.divider()
-
-        # Filtros
-        col_f1, col_f2, col_f3 = st.columns(3)
-        with col_f1:
-            filtro_tipo = st.selectbox("Tipo", ["TODOS", "PAGAR", "RECEBER"])
-        with col_f2:
-            filtro_status = st.selectbox("Status", ["TODOS", "PENDENTE", "PAGA", "VENCIDA", "PARCIAL"])
-        with col_f3:
-            filtro_busca = st.text_input("Buscar", placeholder="Fornecedor ou descrição...")
-
-        # Query
-        query_faturas = session.query(Fatura)
-
-        if filtro_tipo != "TODOS":
-            query_faturas = query_faturas.filter_by(tipo=filtro_tipo)
-
-        if filtro_status == "VENCIDA":
-            query_faturas = query_faturas.filter(
-                Fatura.status.in_(['PENDENTE', 'PARCIAL']),
-                Fatura.data_vencimento < datetime.now().date()
-            )
-        elif filtro_status != "TODOS":
-            query_faturas = query_faturas.filter_by(status=filtro_status)
-
-        if filtro_busca:
-            query_faturas = query_faturas.filter(
-                (Fatura.fornecedor_cliente.ilike(f"%{filtro_busca}%")) |
-                (Fatura.descricao.ilike(f"%{filtro_busca}%"))
-            )
-
-        faturas = query_faturas.order_by(Fatura.data_vencimento).all()
-
-        if faturas:
-            st.write(f"**Total: {len(faturas)} faturas**")
-
-            for fatura in faturas:
-                # Cor baseada no status
-                if fatura.status == "PAGA":
-                    cor = "green"
-                    icon = "✅"
-                elif fatura.esta_vencida:
-                    cor = "red"
-                    icon = "🔴"
+        with st.expander(lbl_expander, expanded=False):
+            st.info(msg_ajuda)
+            texto_paste = st.text_area("Cole os dados aqui:", height=150, placeholder="25/11/2025\tPIX RECEBIDO\t2.000,00 C")
+            substituir_texto = st.checkbox("🔄 Substituir dados do mês", value=True, key="chk_subst_text")
+            
+            if st.button("Processar Texto"):
+                if texto_paste:
+                    with st.spinner("Processando texto..."):
+                        try:
+                            stats = processar_texto_extrato(texto_paste, session, substituir=substituir_texto)
+                            st.success(f"✅ Importação concluída! {stats['importados']} lançamentos processados.")
+                            if stats['duplicados'] > 0:
+                                st.warning(f"{stats['duplicados']} lançamentos duplicados mantidos/ignorados.")
+                            if stats['erros']:
+                                st.error(f"Erros: {stats['erros']}")
+                        except Exception as e:
+                            st.error(f"Erro ao processar: {str(e)}")
+                    st.rerun()
                 else:
-                    cor = "orange"
-                    icon = "⏳"
+                    st.warning("Cole algum texto primeiro.")
 
-                st.markdown(f"""
-                <div class="css-card" style="border-left: 4px solid {cor};">
-                    <div class="card-title">{icon} {fatura.fornecedor_cliente}</div>
-                    <div class="card-subtitle">{fatura.descricao}</div>
-                    <div style="margin-top: 8px;">
-                        <strong>Valor:</strong> R$ {fatura.valor_original:,.2f} |
-                        <strong>Vencimento:</strong> {fatura.data_vencimento.strftime('%d/%m/%Y')} |
-                        <strong>Status:</strong> {fatura.status}
-                    </div>
-                </div>
-                """, unsafe_allow_html=True)
+    st.divider()
 
-                with st.expander("Ações"):
-                    col_a, col_b, col_c = st.columns(3)
-                    with col_a:
-                        if st.button("✏️ Editar", key=f"edit_fat_{fatura.id}"):
-                            st.info("Funcionalidade de edição em desenvolvimento...")
-                    with col_b:
-                        if st.button("🗑️ Excluir", key=f"del_fat_{fatura.id}"):
-                            session.delete(fatura)
-                            session.commit()
-                            st.rerun()
-                    with col_c:
-                        if fatura.status != "PAGA" and st.button("✅ Marcar como Paga", key=f"paga_{fatura.id}"):
-                            fatura.status = "PAGA"
-                            fatura.data_pagamento = datetime.now().date()
-                            fatura.valor_pago = fatura.valor_original
-                            session.commit()
-                            st.rerun()
-        else:
-            st.info("Nenhuma fatura encontrada com os filtros selecionados.")
+    # === ASSISTENTE IA ===
+    with st.expander("🤖 Assistente Financeiro (IA)", expanded=True):
+        col_ai1, col_ai2 = st.columns([4, 1])
+        with col_ai1:
+            pergunta_usuario = st.text_input("Pergunte sobre suas finanças:", placeholder="Ex: Quanto paguei de impostos em 2025? ou Qual o total de entradas em Março?")
+        with col_ai2:
+            st.write("")
+            st.write("")
+            btn_perguntar = st.button("Perguntar 🧠")
+            
+        if btn_perguntar and pergunta_usuario:
+            from modules.finance.finance_ai import FinanceAI
+            finance_ai = FinanceAI()
+            
+            with st.spinner("Analisando dados..."):
+                resposta = finance_ai.analisar_pergunta(pergunta_usuario)
+                st.markdown(f"### 🤖 Resposta:\n{resposta}")
 
-    # ==================== TAB 5: CONCILIAÇÃO ====================
-    with tab5:
-        st.subheader("🔍 Auditoria e Conciliação Bancária")
-        st.info("Sistema automático de matching entre extratos e faturas usando Inteligência Artificial.")
+    st.divider()
 
-        # Estatísticas rápidas
-        extratos_nao_conciliados = session.query(ExtratoBancario).filter_by(conciliado=False).all()
-        faturas_pendentes = session.query(Fatura).filter(Fatura.status.in_(['PENDENTE', 'PARCIAL'])).all()
+    # === DASHBOARD E VISUALIZAÇÃO ===
+    
+    # Filtros
+    col_filtro1, col_filtro2 = st.columns(2)
+    
+    # Busca meses disponíveis
+    meses_disponiveis = session.query(ResumoMensal).order_by(ResumoMensal.ano.desc(), ResumoMensal.id.desc()).all()
+    
+    if meses_disponiveis:
+        opcoes_meses = [f"{m.mes}/{m.ano}" for m in meses_disponiveis]
+        with col_filtro1:
+            mes_selecionado_str = st.selectbox("Selecione o Mês", opcoes_meses)
+            
+        # Pega o objeto ResumoMensal selecionado
+        resumo_selecionado = next(m for m in meses_disponiveis if f"{m.mes}/{m.ano}" == mes_selecionado_str)
+        
+        # === METRICAS DO MÊS ===
+        col_titulo, col_recalc = st.columns([4, 1])
+        with col_titulo:
+            st.subheader(f"📊 Resumo: {resumo_selecionado.mes}/{resumo_selecionado.ano}")
+        with col_recalc:
+            st.write("")  # Alinhamento vertical
+            if st.button("🔄 Recalcular", help="Recalcula os totais de entradas e saídas baseado nos lançamentos atuais"):
+                # Recalcula o resumo
+                tipos_ignorados = ['Aplicação Financeira', 'Resgate Investimento', 'Aplicação', 'Resgate', 'BB Rende Fácil']
+                lancamentos_mes = session.query(ExtratoBB).filter_by(
+                    mes_referencia=resumo_selecionado.mes,
+                    ano_referencia=resumo_selecionado.ano
+                ).all()
 
-        col1, col2, col3 = st.columns(3)
-        with col1:
-            st.metric("Extratos Pendentes", len(extratos_nao_conciliados))
-        with col2:
-            st.metric("Faturas Pendentes", len(faturas_pendentes))
-        with col3:
-            conciliacoes_auto = session.query(Conciliacao).filter_by(tipo_match='AUTO').count()
-            st.metric("Conciliações Automáticas", conciliacoes_auto)
+                total_entradas = sum(l.valor for l in lancamentos_mes if l.valor > 0 and l.tipo not in tipos_ignorados)
+                total_saidas = sum(abs(l.valor) for l in lancamentos_mes if l.valor < 0 and l.tipo not in tipos_ignorados)
+                total_valor_liquido = sum(l.valor for l in lancamentos_mes)
 
-        st.divider()
-
-        # Botão de conciliação automática
-        if st.button("🤖 Executar Conciliação Automática"):
-            with st.spinner("Processando matching automático..."):
-                conciliador = ConciliadorFinanceiro(session)
-                stats = conciliador.conciliar_automatico(extratos_nao_conciliados, faturas_pendentes)
-
-                st.success("✅ Conciliação concluída!")
-
-                col_s1, col_s2, col_s3 = st.columns(3)
-                with col_s1:
-                    st.metric("Conciliados", stats['conciliados'])
-                with col_s2:
-                    st.metric("Sugestões", stats['sugestoes'])
-                with col_s3:
-                    st.metric("Sem Match", stats['sem_match'])
-
+                resumo_selecionado.total_entradas = total_entradas
+                resumo_selecionado.total_saidas = total_saidas
+                resumo_selecionado.total_valor = total_valor_liquido
+                session.add(resumo_selecionado)
+                session.commit()
+                st.success("✅ Resumo recalculado!")
+                time.sleep(1)
                 st.rerun()
 
-        st.divider()
+        # Cálculo dos indicadores financeiros
+        entradas = getattr(resumo_selecionado, 'total_entradas', 0.0)
+        saidas = getattr(resumo_selecionado, 'total_saidas', 0.0)
+        saldo_final = resumo_selecionado.total_valor
+        
+        # Resultado Operacional (O que a empresa gerou de caixa real)
+        resultado_operacional = entradas - saidas
+        
+        # Movimento de Investimento (A diferença para chegar no saldo final vem daqui)
+        # Se Resultado Operacional foi -100 e Saldo Final foi +10, então +110 veio de Resgate.
+        movimento_investimento = saldo_final - resultado_operacional
+        
+        m1, m2, m3, m4, m5 = st.columns(5)
+        
+        with m1:
+            st.metric("Entradas (+)", f"R$ {entradas:,.2f}", help="Vendas, Pix Recebidos, Ordens Bancárias (Ignora Resgates)")
+        with m2:
+            st.metric("Saídas (-)", f"R$ {saidas:,.2f}", delta="-", delta_color="inverse", help="Pagamentos, Impostos, Despesas (Ignora Aplicações)")
+        with m3:
+            st.metric("Resultado Operacional", f"R$ {resultado_operacional:,.2f}", 
+                     delta="Superávit" if resultado_operacional > 0 else "Déficit",
+                     help="Entradas - Saídas. Mostra se a operação do mês deu lucro ou prejuízo de caixa.")
+        with m4:
+            label_inv = "Resgate Invest. (+)" if movimento_investimento > 0 else "Aplicação Aut. (-)"
+            st.metric(label_inv, f"R$ {abs(movimento_investimento):,.2f}", 
+                     help="Movimentação do BB Rende Fácil/Investimentos para cobrir o saldo.")
+        with m5:
+            st.metric("Saldo Final (Banco)", f"R$ {saldo_final:,.2f}", 
+                     delta="Aumentou" if saldo_final > 0 else "Diminuiu",
+                     help="Variação real do saldo na conta corrente (extrato final).")
+            
+        # === ANÁLISE SESAP & PÚBLICO ===
+        st.write("")
 
-        # Conciliação Manual
-        st.markdown("### 🔧 Conciliação Manual")
+        # Total SESAP = Apenas lançamentos com histórico "632 Ordem Bancária"
+        # (valor total que a SESAP efetivamente pagou)
+        total_sesap = session.query(func.sum(ExtratoBB.valor)).filter(
+            ExtratoBB.mes_referencia == resumo_selecionado.mes,
+            ExtratoBB.ano_referencia == resumo_selecionado.ano,
+            ExtratoBB.historico.ilike('%632 Ordem Bancária%')
+        ).scalar() or 0.0
 
-        if extratos_nao_conciliados and faturas_pendentes:
-            # Seleção de extrato
-            extrato_selecionado = st.selectbox(
-                "Selecione um Extrato:",
-                extratos_nao_conciliados,
-                format_func=lambda x: f"{x.data_lancamento.strftime('%d/%m/%Y')} - R$ {abs(x.valor):,.2f} - {x.descricao[:50]}"
-            )
+        # Detalhe Base Aérea
+        total_base_aerea = session.query(func.sum(ExtratoBB.valor)).filter(
+            ExtratoBB.mes_referencia == resumo_selecionado.mes,
+            ExtratoBB.ano_referencia == resumo_selecionado.ano,
+            ExtratoBB.tipo == 'Recebimento Base Aérea'
+        ).scalar() or 0.0
 
-            if extrato_selecionado:
-                # Busca sugestões
-                conciliador = ConciliadorFinanceiro(session)
-                matches = conciliador.buscar_matches(extrato_selecionado, faturas_pendentes, modo='sugestao')
+        with st.expander("🏥 Análise de Recebimentos Públicos (SESAP / Base Aérea)", expanded=True):
+            c_sesap, c_base = st.columns(2)
+            with c_sesap:
+                st.metric("Total Pago pela SESAP", f"R$ {total_sesap:,.2f}", help="Valor total baseado no histórico '632 Ordem Bancária'.")
 
-                if matches:
-                    st.write(f"**{len(matches)} sugestões encontradas:**")
+                # Detalhamento por Categoria (para relatório)
+                if total_sesap > 0:
+                    st.markdown("**Detalhamento por Categoria:**")
+                    st.caption("(Classificações para nível de relatório)")
 
-                    for match in matches[:5]:  # Top 5
-                        fatura = match['fatura']
-                        score = match['score']
+                    categorias_detalhamento = ['Hematologia', 'Coagulação', 'Coagulacao', 'Ionograma']
+                    # Filtra apenas lançamentos SESAP (histórico "632 Ordem Bancária") que foram classificados
+                    breakdown = session.query(ExtratoBB.tipo, func.sum(ExtratoBB.valor)).filter(
+                        ExtratoBB.mes_referencia == resumo_selecionado.mes,
+                        ExtratoBB.ano_referencia == resumo_selecionado.ano,
+                        ExtratoBB.historico.ilike('%632 Ordem Bancária%'),
+                        ExtratoBB.tipo.in_(categorias_detalhamento)
+                    ).group_by(ExtratoBB.tipo).order_by(func.sum(ExtratoBB.valor).desc()).all()
 
-                        # Cor baseada no score
-                        if score >= 85:
-                            cor = "green"
-                        elif score >= 70:
-                            cor = "orange"
-                        else:
-                            cor = "gray"
+                    total_classificado = 0
+                    for t, v in breakdown:
+                        total_classificado += v
+                        st.caption(f"• {t}: R$ {v:,.2f}")
 
-                        st.markdown(f"""
-                        <div style="padding: 12px; margin: 8px 0; border-left: 5px solid {cor}; background: #f8f9fa;">
-                            <strong>Score: {score}%</strong> - {fatura.fornecedor_cliente} | R$ {fatura.valor_original:,.2f}
-                            <br><small>{fatura.descricao} | Vencimento: {fatura.data_vencimento.strftime('%d/%m/%Y')}</small>
-                            <br><small style="color: #666;">{match['detalhes']}</small>
-                        </div>
-                        """, unsafe_allow_html=True)
+                    # Mostra quanto ainda falta classificar
+                    nao_classificado = total_sesap - total_classificado
+                    if nao_classificado > 0:
+                        st.caption(f"• Não Classificado: R$ {nao_classificado:,.2f}")
 
-                        if st.button(f"✅ Conciliar", key=f"conc_{extrato_selecionado.id}_{fatura.id}"):
-                            if conciliador.criar_conciliacao_manual(
-                                extrato_selecionado.id,
-                                fatura.id,
-                                abs(extrato_selecionado.valor),
-                                f"Match manual - Score: {score}%"
-                            ):
-                                st.success("Conciliação realizada!")
-                                st.rerun()
-                            else:
-                                st.error("Erro ao conciliar.")
+            with c_base:
+                st.metric("Total Base Aérea", f"R$ {total_base_aerea:,.2f}", help="Identificado por '12 SEC TES NAC' ou 'AEREA'.")
+            
+        # === GRÁFICOS DE COMPOSIÇÃO ===
+        st.write("") # Espaçamento
+        col_comp1, col_comp2 = st.columns(2)
+        
+        # Tipos neutros para ignorar
+        tipos_neutros = ['Aplicação', 'Aplicação Financeira', 'Resgate', 'Resgate Investimento', 'BB Rende Fácil']
+
+        # --- Entradas ---
+        with col_comp1:
+            with st.expander("🍰 Composição das Entradas (Receita)", expanded=False):
+                # Categorias de detalhamento SESAP que devem ser agrupadas
+                categorias_sesap_detalhamento = ['Hematologia', 'Coagulação', 'Coagulacao', 'Ionograma', 'Recebimento SESAP']
+
+                # Total SESAP agregado (histórico "632 Ordem Bancária")
+                total_sesap_receita = session.query(func.sum(ExtratoBB.valor)).filter(
+                    ExtratoBB.mes_referencia == resumo_selecionado.mes,
+                    ExtratoBB.ano_referencia == resumo_selecionado.ano,
+                    ExtratoBB.historico.ilike('%632 Ordem Bancária%'),
+                    ExtratoBB.valor > 0
+                ).scalar() or 0.0
+
+                # Outras categorias (excluindo SESAP e neutros)
+                composicao_ent = session.query(
+                    ExtratoBB.tipo,
+                    func.sum(ExtratoBB.valor)
+                ).filter(
+                    ExtratoBB.mes_referencia == resumo_selecionado.mes,
+                    ExtratoBB.ano_referencia == resumo_selecionado.ano,
+                    ExtratoBB.valor > 0,
+                    ExtratoBB.tipo.notin_(tipos_neutros + categorias_sesap_detalhamento)
+                ).group_by(ExtratoBB.tipo).order_by(func.sum(ExtratoBB.valor).desc()).all()
+
+                total_receita_base = getattr(resumo_selecionado, 'total_entradas', 0.0)
+
+                if total_receita_base > 0:
+                    # Primeiro mostra Recebimento SESAP agregado
+                    if total_sesap_receita > 0:
+                        pct = (total_sesap_receita / total_receita_base) * 100
+                        st.write(f"**Recebimento SESAP**")
+                        st.write(f"R$ {total_sesap_receita:,.2f} ({pct:.1f}%)")
+                        st.progress(min(int(pct), 100))
+
+                    # Depois mostra outras categorias
+                    for cat, valor in composicao_ent:
+                        if not cat: cat = "Outros / Não Identificado"
+                        pct = (valor / total_receita_base) * 100
+                        st.write(f"**{cat}**")
+                        st.write(f"R$ {valor:,.2f} ({pct:.1f}%)")
+                        st.progress(min(int(pct), 100))
                 else:
-                    st.warning("Nenhuma sugestão encontrada para este extrato.")
-        else:
-            st.info("Não há extratos ou faturas pendentes para conciliar.")
+                    st.info("Sem dados de entrada.")
 
+        # --- Saídas ---
+        with col_comp2:
+            with st.expander("💸 Composição das Saídas (Despesas)", expanded=False):
+                # Nota: valor é negativo no banco, usamos abs para somar
+                composicao_sai = session.query(
+                    ExtratoBB.tipo, 
+                    func.sum(func.abs(ExtratoBB.valor))
+                ).filter(
+                    ExtratoBB.mes_referencia == resumo_selecionado.mes,
+                    ExtratoBB.ano_referencia == resumo_selecionado.ano,
+                    ExtratoBB.valor < 0, 
+                    ExtratoBB.tipo.notin_(tipos_neutros)
+                ).group_by(ExtratoBB.tipo).order_by(func.sum(func.abs(ExtratoBB.valor)).desc()).all()
+                
+                total_despesa_base = getattr(resumo_selecionado, 'total_saidas', 0.0)
+                
+                if composicao_sai and total_despesa_base > 0:
+                    for cat, valor in composicao_sai:
+                        if not cat: cat = "Outros / Não Identificado"
+                        pct = (valor / total_despesa_base) * 100
+                        st.write(f"**{cat}**")
+                        st.write(f"R$ {valor:,.2f} ({pct:.1f}%)")
+                        st.progress(min(int(pct), 100))
+                else:
+                    st.info("Sem dados de saída.")
+        
         st.divider()
+        
+        # === TABELA EDITÁVEL DE LANÇAMENTOS ===
+        st.subheader("📝 Gerenciar Lançamentos")
+        st.info("Você pode alterar o **Tipo** e a **Fatura** diretamente na tabela abaixo. Útil para classificar 'Ordem Bancária' como 'Hematologia', etc.")
+        
+        # Filtros da tabela
+        tf1, tf2, tf3 = st.columns([1, 1, 2])
+        with tf1:
+            filtro_status = st.selectbox("Status", ["Todos", "Baixado", "Pendente"])
+        with tf2:
+            st.write("") # Alinhamento vertical
+            apenas_pendentes = st.checkbox("⏳ Classificar O.B.", help="Mostra apenas 'Ordem Bancária' para você definir se é Hematologia, Ionograma, etc.")
+        with tf3:
+            filtro_texto = st.text_input("Buscar no histórico", placeholder="Ex: Pagamento...")
+        
+        # Query
+        query = session.query(ExtratoBB).filter_by(
+            mes_referencia=resumo_selecionado.mes,
+            ano_referencia=resumo_selecionado.ano
+        )
+        
+        if apenas_pendentes:
+            query = query.filter(ExtratoBB.tipo == 'Ordem Bancária')
+        
+        if filtro_status != "Todos":
+            query = query.filter(ExtratoBB.status.ilike(filtro_status))
+            
+        if filtro_texto:
+            query = query.filter(ExtratoBB.historico.ilike(f"%{filtro_texto}%"))
+            
+        lancamentos = query.order_by(ExtratoBB.dt_balancete.desc()).all()
+        
+        if lancamentos:
+            # Prepara DF para edição (Mantém ID para update)
+            data_edit = []
+            for l in lancamentos:
+                # Formatação visual do Status
+                st_fmt = l.status
+                if str(l.status).lower() == 'baixado': st_fmt = "🟢 Baixado"
+                elif str(l.status).lower() == 'pendente': st_fmt = "🟡 Pendente"
+                elif not l.status: st_fmt = "⚪ (Vazio)"
 
-        # Histórico de conciliações
-        st.markdown("### 📜 Histórico de Conciliações")
-        conciliacoes = session.query(Conciliacao).order_by(Conciliacao.data_conciliacao.desc()).limit(20).all()
+                data_edit.append({
+                    "id": l.id,
+                    "Data": l.dt_balancete,
+                    "Status": st_fmt,
+                    "Histórico": l.historico,
+                    "Documento": l.documento,
+                    "Valor": l.valor,
+                    "Tipo": l.tipo,
+                    "Fatura": l.fatura
+                })
+            
+            df_edit = pd.DataFrame(data_edit)
+            df_edit.set_index("id", inplace=True) # Define ID como índice para ocultar
+            
+            # Configura editor
+            edited_df = st.data_editor(
+                df_edit,
+                column_config={
+                    "Data": st.column_config.DateColumn(format="DD/MM/YYYY", disabled=True),
+                    "Status": st.column_config.SelectboxColumn(
+                        "Status", 
+                        options=["🟢 Baixado", "🟡 Pendente"], 
+                        width="small", 
+                        required=True
+                    ),
+                    "Histórico": st.column_config.TextColumn(disabled=True, width="large"),
+                    "Valor": st.column_config.NumberColumn(format="R$ %.2f", disabled=True),
+                    "Tipo": st.column_config.SelectboxColumn(
+                        "Classificação",
+                        options=[
+                            "Ordem Bancária", "Hematologia", "Coagulação", "Ionograma", "Base",
+                            "Pix - Recebido", "Pix - Enviado", "Pagamento Boleto", 
+                            "Pagamento Fornecedor", "Impostos", "Tarifa Bancária",
+                            "Transferência Recebida", "Transferência Enviada", 
+                            "Aplicação", "Resgate", "Pagamento Ourocap", "Depósito Corban", "Outros"
+                        ],
+                        required=True
+                    ),
+                    "Fatura": st.column_config.TextColumn("Fatura / Obs")
+                },
+                hide_index=True, # Oculta o ID (que agora é o índice)
+                use_container_width=True,
+                key="editor_lancamentos"
+            )
+            
+            # Botão para Salvar (Verifica diferenças)
+            if st.button("💾 Salvar Classificações"):
+                with st.spinner("Atualizando dados..."):
+                    alterados = 0
+                    for lanc_id, row in edited_df.iterrows():
+                        # Busca original no banco usando o ID do índice
+                        lanc_db = session.query(ExtratoBB).get(lanc_id)
+                        
+                        # Verifica mudanças
+                        mudou = False
+                        
+                        # Status Check
+                        # Reconstrói formato visual para comparar
+                        st_visual_db = "🟢 Baixado" if str(lanc_db.status).lower() == 'baixado' else "🟡 Pendente"
+                        if not lanc_db.status: st_visual_db = "⚪ (Vazio)"
+                        
+                        if row["Status"] != st_visual_db:
+                            # Remove emoji para salvar limpo
+                            lanc_db.status = row["Status"].replace("🟢 ", "").replace("🟡 ", "").strip()
+                            mudou = True
 
-        if conciliacoes:
-            for conc in conciliacoes:
-                tipo_icon = "🤖" if conc.tipo_match == "AUTO" else "👤"
-                st.markdown(f"""
-                <div style="padding: 8px; margin: 4px 0; background: #e8f5e9;">
-                    {tipo_icon} R$ {conc.valor_conciliado:,.2f} -
-                    <strong>{conc.fatura.fornecedor_cliente}</strong> ↔ {conc.extrato.descricao[:40]}
-                    <br><small>{conc.data_conciliacao.strftime('%d/%m/%Y %H:%M')} | Score: {conc.score_match:.0f}%</small>
-                </div>
-                """, unsafe_allow_html=True)
+                        if lanc_db.tipo != row["Tipo"]:
+                            lanc_db.tipo = row["Tipo"]
+                            mudou = True
+                        if lanc_db.fatura != row["Fatura"]:
+                            lanc_db.fatura = row["Fatura"]
+                            mudou = True
+                            
+                        if mudou:
+                            session.add(lanc_db)
+                            alterados += 1
+                    
+                    if alterados > 0:
+                        session.commit()
 
-                if st.button("↩️ Desfazer", key=f"undo_{conc.id}"):
-                    conciliador = ConciliadorFinanceiro(session)
-                    if conciliador.desfazer_conciliacao(conc.id):
-                        st.success("Conciliação desfeita!")
+                        # RECALCULA o ResumoMensal para atualizar os totais de entradas/saídas
+                        tipos_ignorados = ['Aplicação Financeira', 'Resgate Investimento', 'Aplicação', 'Resgate', 'BB Rende Fácil']
+
+                        # Busca todos os lançamentos do mês
+                        lancamentos_mes = session.query(ExtratoBB).filter_by(
+                            mes_referencia=resumo_selecionado.mes,
+                            ano_referencia=resumo_selecionado.ano
+                        ).all()
+
+                        # Recalcula entradas e saídas
+                        total_entradas = 0.0
+                        total_saidas = 0.0
+                        total_valor_liquido = 0.0
+
+                        for lanc in lancamentos_mes:
+                            total_valor_liquido += lanc.valor
+
+                            # Ignora aplicações/resgates
+                            if lanc.tipo in tipos_ignorados:
+                                continue
+
+                            if lanc.valor > 0:
+                                total_entradas += lanc.valor
+                            elif lanc.valor < 0:
+                                total_saidas += abs(lanc.valor)
+
+                        # Atualiza o resumo mensal
+                        resumo_selecionado.total_entradas = total_entradas
+                        resumo_selecionado.total_saidas = total_saidas
+                        resumo_selecionado.total_valor = total_valor_liquido
+                        session.add(resumo_selecionado)
+                        session.commit()
+
+                        st.success(f"✅ {alterados} lançamentos atualizados e resumo recalculado!")
+                        time.sleep(1)
                         st.rerun()
+                    else:
+                        st.info("Nenhuma alteração detectada.")
+                        
         else:
-            st.info("Nenhuma conciliação realizada ainda.")
+            st.info("Nenhum lançamento encontrado com os filtros atuais.")
+            
+    else:
+        st.info("Nenhum extrato importado ainda. Use a opção acima para importar um arquivo Excel do BB.")
+
+    st.divider()
+    
+    # === ZONA DE PERIGO ===
+    with st.expander("🗑️ Zona de Perigo - Limpeza de Dados"):
+        st.warning("Cuidado: As ações abaixo são irreversíveis.")
+        
+        col_limp1, col_limp2 = st.columns(2)
+        
+        with col_limp1:
+            # Opção para limpar mês específico
+            meses_para_limpar = session.query(ResumoMensal).all()
+            opcoes_limpeza = [f"{m.mes}/{m.ano}" for m in meses_para_limpar]
+            
+            sel_limpeza = st.selectbox("Selecionar Mês para Excluir", ["Selecione..."] + opcoes_limpeza)
+            
+            if st.button("Apagar Mês Selecionado", type="primary"):
+                if sel_limpeza != "Selecione...":
+                    try:
+                        mes_del, ano_del = sel_limpeza.split('/')
+                        # Delete logic
+                        session.query(ExtratoBB).filter_by(mes_referencia=mes_del, ano_referencia=int(ano_del)).delete()
+                        session.query(ResumoMensal).filter_by(mes=mes_del, ano=int(ano_del)).delete()
+                        session.commit()
+                        st.success(f"Dados de {sel_limpeza} apagados!")
+                        time.sleep(1)
+                        st.rerun()
+                    except Exception as e:
+                        st.error(f"Erro ao apagar: {e}")
+        
+        with col_limp2:
+            st.write("Apagar TUDO")
+            if st.button("💣 Apagar TODOS os dados financeiros", type="primary"):
+                session.query(ExtratoBB).delete()
+                session.query(ResumoMensal).delete()
+                session.commit()
+                st.success("Banco financeiro completamente zerado!")
+                time.sleep(1)
+                st.rerun()
 
     session.close()
 
@@ -1453,246 +1754,97 @@ elif page == "Configurações":
     st.header("⚙️ Configurações do Sistema")
     
     session = get_session()
-    config_termos = session.query(Configuracao).filter_by(chave='termos_busca_padrao').first()
     
-    if not config_termos:
-        st.error("Configuração de termos não encontrada! Rode o script de migração.")
-    else:
-        # --- Seção 1: Gerenciador de Termos ---
-        st.subheader("📝 Termos de Busca Padrão (Global)")
-        st.info("Esses termos são usados para encontrar editais que podem ter descrições genéricas (ex: 'Material Hospitalar'). O sistema baixa esses editais e procura seus produtos dentro deles.")
+    # --- Seção 1: Configuração IA (Gemini) ---
+    st.subheader("🤖 Configuração da IA (Gemini)")
+    st.markdown("Configure sua chave de API do Google Gemini para ativar resumos automáticos e estimativas de preço.")
+    
+    config_api_key = session.query(Configuracao).filter_by(chave='gemini_api_key').first()
+    if not config_api_key:
+        config_api_key = Configuracao(chave='gemini_api_key', valor='')
+        session.add(config_api_key)
+        session.commit()
         
-        termos_atuais = config_termos.valor
-        novos_termos = st.text_area("Lista de Termos (separados por vírgula)", value=termos_atuais, height=150)
+    nova_key = st.text_input("Gemini API Key", value=config_api_key.valor, type="password")
+    if st.button("Salvar API Key"):
+        config_api_key.valor = nova_key
+        session.commit()
+        st.success("API Key salva com sucesso!")
         
-        if st.button("Salvar Termos"):
-            config_termos.valor = novos_termos
-            session.commit()
-            st.success("Termos de busca atualizados com sucesso!")
-            st.rerun()
-            
-        st.divider()
+    st.divider()
         
-        # --- Seção 2: Configuração IA (Gemini) ---
-        st.subheader("🤖 Configuração da IA (Gemini)")
-        st.markdown("Configure sua chave de API do Google Gemini para ativar resumos automáticos e estimativas de preço.")
+    # --- Seção 2: Notificações WhatsApp (Multi-usuário) ---
+    st.subheader("🔔 Notificações WhatsApp (CallMeBot)")
+    st.markdown("""
+    Gerencie a lista de pessoas que receberão os alertas de licitações.
+    """)
+    
+    import json
+    
+    # Carrega configuração de contatos (Lista JSON)
+    config_contacts = session.query(Configuracao).filter_by(chave='whatsapp_contacts').first()
+    
+    # Migração Automática (Se tiver configuração antiga, converte para lista)
+    if not config_contacts:
+        old_phone = session.query(Configuracao).filter_by(chave='whatsapp_phone').first()
+        old_key = session.query(Configuracao).filter_by(chave='whatsapp_apikey').first()
         
-        config_api_key = session.query(Configuracao).filter_by(chave='gemini_api_key').first()
-        if not config_api_key:
-            config_api_key = Configuracao(chave='gemini_api_key', valor='')
-            session.add(config_api_key)
-            session.commit()
+        initial_list = []
+        if old_phone and old_key and old_phone.valor:
+            initial_list.append({"nome": "Principal (Migrado)", "phone": old_phone.valor, "apikey": old_key.valor})
             
-        nova_key = st.text_input("Gemini API Key", value=config_api_key.valor, type="password")
-        if st.button("Salvar API Key"):
-            config_api_key.valor = nova_key
-            session.commit()
-            st.success("API Key salva com sucesso!")
-            
-        st.divider()
-
-        # --- Perfil da Empresa ---
-        st.subheader("🏢 Perfil da Empresa (para Elegibilidade)")
-        eligibility = EligibilityChecker()
-        profile = eligibility.get_company_profile()
-        
-        with st.form("form_perfil"):
-            razao_social = st.text_input("Razão Social", value=profile.get('razao_social', ''))
-            cnpj = st.text_input("CNPJ", value=profile.get('cnpj', ''))
-            porte = st.selectbox("Porte da Empresa", ["ME", "EPP", "Grande Porte"], index=["ME", "EPP", "Grande Porte"].index(profile.get('porte', 'ME')))
-            
-            # Estados de Atuação
-            all_ufs = ['AC', 'AL', 'AP', 'AM', 'BA', 'CE', 'DF', 'ES', 'GO', 'MA', 'MT', 'MS', 'MG', 'PA', 'PB', 'PR', 'PE', 'PI', 'RJ', 'RN', 'RS', 'RO', 'RR', 'SC', 'SP', 'SE', 'TO']
-            default_ufs = profile.get('estados_atuacao', ['RN', 'PB', 'PE', 'AL'])
-            estados_atuacao = st.multiselect("Estados de Atuação", all_ufs, default=default_ufs)
-            
-            cnaes = st.text_area("CNAEs (separados por vírgula)", value=profile.get('cnaes', ''))
-            
-            if st.form_submit_button("Salvar Perfil"):
-                new_profile = {
-                    "razao_social": razao_social,
-                    "cnpj": cnpj,
-                    "porte": porte,
-                    "estados_atuacao": estados_atuacao,
-                    "cnaes": cnaes
-                }
-                eligibility.save_company_profile(new_profile)
-                st.success("Perfil atualizado com sucesso!")
-
-        st.divider()
-        
-        # --- Seção 2: Importador CNAE ---
-        st.subheader("🏭 Gerador de Keywords via CNAE")
-        st.markdown("Digite o código CNAE da sua empresa para adicionar automaticamente termos técnicos relevantes à sua lista de busca.")
-        
-        cnae_input = st.text_input("Código CNAE (ex: 4645-1/01)", placeholder="0000-0/00")
-        
-        if st.button("Gerar e Adicionar Termos"):
-            # from cnae_data import get_keywords_by_cnae (Already imported at top)
-            
-            keywords_cnae = get_keywords_by_cnae(cnae_input)
-            
-            if keywords_cnae:
-                # Lógica de Merge
-                lista_atual = [t.strip() for t in termos_atuais.split(',')]
-                adicionados = []
+        config_contacts = Configuracao(chave='whatsapp_contacts', valor=json.dumps(initial_list))
+        session.add(config_contacts)
+        session.commit()
+    
+    # Parse da lista
+    try:
+        contacts_list = json.loads(config_contacts.valor) if config_contacts.valor else []
+    except:
+        contacts_list = []
+    
+    # Lista de Contatos
+    if contacts_list:
+        st.write("**Contatos Cadastrados:**")
+        for idx, contact in enumerate(contacts_list):
+            with st.container():
+                c1, c2, c3, c4 = st.columns([3, 3, 1, 1])
+                c1.markdown(f"👤 **{contact.get('nome', 'Sem Nome')}**")
+                c2.text(f"📞 {contact.get('phone', '')}")
                 
-                for kw in keywords_cnae:
-                    if kw not in lista_atual:
-                        lista_atual.append(kw)
-                        adicionados.append(kw)
-                
-                if adicionados:
-                    config_termos.valor = ", ".join(lista_atual)
+                if c3.button("🔔", key=f"test_wpp_{idx}", help="Enviar mensagem de teste"):
+                    notifier = WhatsAppNotifier(contact.get('phone'), contact.get('apikey'))
+                    if notifier.enviar_mensagem("🔔 Teste de notificação Medcal realizado com sucesso!"):
+                        st.toast(f"Mensagem enviada para {contact.get('nome')}!", icon="✅")
+                    else:
+                        st.error(f"Erro ao enviar para {contact.get('nome')}. Verifique os dados.")
+
+                if c4.button("🗑️", key=f"del_wpp_{idx}", help="Excluir este contato"):
+                    contacts_list.pop(idx)
+                    config_contacts.valor = json.dumps(contacts_list)
                     session.commit()
-                    st.success(f"✅ {len(adicionados)} novos termos adicionados: {', '.join(adicionados)}")
+                    st.rerun()
+                st.divider()
+    else:
+        st.info("Nenhum contato cadastrado ainda.")
+        
+    # Formulário para Adicionar
+    with st.expander("➕ Adicionar Novo Contato", expanded=False):
+        with st.form("form_add_wpp"):
+            st.markdown("Para obter a API Key: Adicione **+34 644 56 55 18** e envie `I allow callmebot to send me messages`.")
+            col_n1, col_n2 = st.columns(2)
+            n_nome = col_n1.text_input("Nome do Contato")
+            n_phone = col_n2.text_input("Número (com DDI e DDD)", placeholder="5584999999999")
+            n_key = st.text_input("API Key (CallMeBot)", type="password")
+            
+            if st.form_submit_button("Salvar Contato"):
+                if n_nome and n_phone and n_key:
+                    contacts_list.append({"nome": n_nome, "phone": n_phone, "apikey": n_key})
+                    config_contacts.valor = json.dumps(contacts_list)
+                    session.commit()
+                    st.success("Contato adicionado com sucesso!")
                     st.rerun()
                 else:
-                    st.warning("Todos os termos desse CNAE já estão na sua lista!")
-            else:
-                st.error("CNAE não encontrado ou sem keywords mapeadas. Tente outro código.")
-
-        st.divider()
-        
-        # --- Seção 4: Notificações WhatsApp ---
-        st.subheader("🔔 Notificações WhatsApp (CallMeBot)")
-        st.markdown("""
-        Configure o envio de alertas via WhatsApp usando a API gratuita do CallMeBot.
-        
-        **Como configurar:**
-        1. Adicione o número **+34 644 56 55 18** aos seus contatos do WhatsApp.
-        2. Envie a mensagem: `I allow callmebot to send me messages`
-        3. Você receberá uma **API Key**. Insira abaixo.
-        """)
-        
-        conf_wpp_phone = session.query(Configuracao).filter_by(chave='whatsapp_phone').first()
-        conf_wpp_key = session.query(Configuracao).filter_by(chave='whatsapp_apikey').first()
-        
-        if not conf_wpp_phone:
-            conf_wpp_phone = Configuracao(chave='whatsapp_phone', valor='')
-            session.add(conf_wpp_phone)
-        if not conf_wpp_key:
-            conf_wpp_key = Configuracao(chave='whatsapp_apikey', valor='')
-            session.add(conf_wpp_key)
-            
-        col_wpp1, col_wpp2 = st.columns(2)
-        with col_wpp1:
-            new_wpp_phone = st.text_input("Seu Número (com DDI e DDD)", value=conf_wpp_phone.valor, placeholder="5584999999999")
-        with col_wpp2:
-            new_wpp_key = st.text_input("API Key (CallMeBot)", value=conf_wpp_key.valor, type="password")
-            
-        if st.button("Salvar WhatsApp"):
-            conf_wpp_phone.valor = new_wpp_phone
-            conf_wpp_key.valor = new_wpp_key
-            session.commit()
-            st.success("Configurações de WhatsApp salvas!")
-            
-        if st.button("📨 Testar Envio de Mensagem"):
-            if not new_wpp_phone or not new_wpp_key:
-                st.error("Preencha o número e a API Key antes de testar.")
-            else:
-                notifier = WhatsAppNotifier(new_wpp_phone, new_wpp_key)
-                if notifier.enviar_mensagem("✅ Teste do Sistema de Licitações Medcal! O sistema de notificações está funcionando."):
-                    st.success("Mensagem enviada com sucesso! Verifique seu WhatsApp.")
-                else:
-                    st.error("Falha ao enviar mensagem. Verifique o número e a API Key.")
-    
+                    st.error("Preencha todos os campos obrigatórios.")
+                    
     session.close()
-            
-    session.close()
-
-elif page == "📥 Importar & Relatórios":
-    st.header("📥 Central de Importação e Relatórios")
-    st.info("Importe planilhas do ConLicitação, Portal de Compras Públicas ou qualquer Excel/CSV para analisar automaticamente.")
-    
-    from modules.utils.importer import load_data, smart_map_columns, normalize_imported_data
-    # Produto already imported at top level
-    
-    uploaded_file = st.file_uploader("Carregar Arquivo (Excel ou CSV)", type=['xlsx', 'xls', 'csv'])
-    
-    if uploaded_file:
-        df = load_data(uploaded_file)
-        
-        if df is not None:
-            st.write("### 1. Pré-visualização dos Dados")
-            st.dataframe(df.head())
-            
-            st.write("### 2. Mapeamento de Colunas")
-            mapping = smart_map_columns(df)
-            
-            col1, col2, col3 = st.columns(3)
-            with col1:
-                mapping["descricao"] = st.selectbox("Coluna de Descrição/Objeto", df.columns, index=df.columns.get_loc(mapping["descricao"]) if mapping["descricao"] in df.columns else 0)
-                mapping["quantidade"] = st.selectbox("Coluna de Quantidade", df.columns, index=df.columns.get_loc(mapping["quantidade"]) if mapping["quantidade"] in df.columns else 0)
-            with col2:
-                mapping["valor_unitario"] = st.selectbox("Coluna de Valor Unitário (Estimado)", df.columns, index=df.columns.get_loc(mapping["valor_unitario"]) if mapping["valor_unitario"] in df.columns else 0)
-                mapping["unidade"] = st.selectbox("Coluna de Unidade", df.columns, index=df.columns.get_loc(mapping["unidade"]) if mapping["unidade"] in df.columns else 0)
-            with col3:
-                mapping["orgao"] = st.selectbox("Coluna de Órgão/Comprador", df.columns, index=df.columns.get_loc(mapping["orgao"]) if mapping["orgao"] in df.columns else 0)
-                mapping["numero_edital"] = st.selectbox("Coluna de Nº Edital", df.columns, index=df.columns.get_loc(mapping["numero_edital"]) if mapping["numero_edital"] in df.columns else 0)
-                
-            if st.button("✅ Confirmar e Analisar"):
-                st.write("### 3. Resultado da Análise")
-                
-                # Normaliza
-                df_norm = normalize_imported_data(df, mapping)
-                
-                # Busca Produtos do Banco para Match
-                session = get_session()
-                produtos = session.query(Produto).all()
-                
-                matches = []
-                
-                progress_bar = st.progress(0)
-                total_items = len(df_norm)
-                
-                for idx, row in df_norm.iterrows():
-                    item_desc = str(row['descricao']).upper()
-                    melhor_match = None
-                    
-                    # Lógica de Match (Cópia simplificada do match_itens)
-                    for prod in produtos:
-                        keywords = [k.strip().upper() for k in prod.palavras_chave.split(',')]
-                        if any(k in item_desc for k in keywords):
-                            melhor_match = prod
-                            break
-                    
-                    if melhor_match:
-                        lucro_bruto = (row['valor_unitario'] - melhor_match.preco_custo) * row['quantidade']
-                        margem = ((row['valor_unitario'] - melhor_match.preco_custo) / row['valor_unitario']) * 100 if row['valor_unitario'] > 0 else 0
-                        
-                        matches.append({
-                            "Edital": row['numero_edital'],
-                            "Órgão": row['orgao'],
-                            "Item Edital": row['descricao'],
-                            "Qtd": row['quantidade'],
-                            "Valor Edital (Unit)": row['valor_unitario'],
-                            "Meu Produto": melhor_match.nome,
-                            "Meu Custo": melhor_match.preco_custo,
-                            "Lucro Potencial": lucro_bruto,
-                            "Margem (%)": margem
-                        })
-                    
-                    progress_bar.progress((idx + 1) / total_items)
-                
-                session.close()
-                
-                if matches:
-                    df_matches = pd.DataFrame(matches)
-                    st.success(f"Encontradas {len(matches)} oportunidades compatíveis com seu catálogo!")
-                    
-                    # Formatação para exibição
-                    st.dataframe(
-                        df_matches.style.format({
-                            "Valor Edital (Unit)": "R$ {:,.2f}",
-                            "Meu Custo": "R$ {:,.2f}",
-                            "Lucro Potencial": "R$ {:,.2f}",
-                            "Margem (%)": "{:.1f}%"
-                        }),
-                        use_container_width=True
-                    )
-                    
-                    # Botão para Exportar
-                    # (Poderíamos adicionar aqui exportação para Excel)
-                else:
-                    st.warning("Nenhum match encontrado com seu catálogo.")

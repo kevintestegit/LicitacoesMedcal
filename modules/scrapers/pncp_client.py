@@ -176,7 +176,32 @@ class PNCPClient:
         "ENXOVAL", "CAMA E MESA", "ROUPARIA", "TECIDOS", "TECIDO", "LENÇOL", "LENCOL", "TRAVESSEIRO",
         "LIVRO", "LIVROS", "BIBLIOTECA", "ACERVO BIBLIOGRAFICO", "PUBLICACOES", "PUBLICAÇÕES",
         "REVISTA", "JORNAL", "PERIODICO", "COLECAO", "COLEÇÃO",
-        "MATERIAL DE LIMPEZA", "HIGIENE E LIMPEZA", "COPA E COZINHA"
+        "MATERIAL DE LIMPEZA", "HIGIENE E LIMPEZA", "COPA E COZINHA",
+        
+        # Itens hospitalares NÃO comercializados pela Medcal
+        "BERCO", "BERÇO", "BERÇOS", "BERCOS", "CAMA HOSPITALAR", "CAMAS HOSPITALARES",
+        "COLCHAO", "COLCHÃO", "COLCHOES", "COLCHÕES", "MACA", "MACAS",
+        "CADEIRA DE RODAS", "CADEIRAS DE RODAS", "MULETA", "MULETAS",
+        "ANDADOR", "ANDADORES", "BENGALA", "BENGALAS",
+        "ROUPA DE CAMA", "ROUPAS DE CAMA", "COBERTA", "COBERTAS", "COBERTOR", "COBERTORES",
+        "FRONHA", "FRONHAS", "TOALHA", "TOALHAS", "HAMPER", "HAMPERS",
+        "CORTINA", "CORTINAS", "PERSIANA", "PERSIANAS",
+        "AR CONDICIONADO", "CLIMATIZADOR", "CLIMATIZADORES", "SPLIT",
+        "GELADEIRA", "REFRIGERADOR", "FREEZER", "FRIGORIFICO",
+        "FOGAO", "FOGÃO", "MICROONDAS", "FORNO",
+        "MOBILIARIO", "MOBILIÁRIO", "MOVEL", "MÓVEL", "MOVEIS", "MÓVEIS",
+        "ARMARIO", "ARMÁRIO", "ESTANTE", "PRATELEIRA", "MESA", "MESAS", "CADEIRA", "CADEIRAS",
+        "MAMOGRAFO", "MAMÓGRAFO", "TOMOGRAFO", "TOMÓGRAFO", "RESSONANCIA", "RESSONÂNCIA",
+        "ULTRASSOM", "ULTRASSONOGRAFIA", "ECOGRAFO", "ECÓGRAFO",
+        "DESFIBRILADOR", "CARDIOVERSOR", "MONITOR MULTIPARAMETRO", "MONITOR MULTIPARÂMETRO",
+        "BISTURI ELETRICO", "BISTURI ELÉTRICO", "FOCO CIRURGICO", "FOCO CIRÚRGICO",
+        "MESA CIRURGICA", "MESA CIRÚRGICA", "INSTRUMENTOS CIRURGICOS", "INSTRUMENTOS CIRÚRGICOS",
+        "ORTESE", "ÓRTESE", "PROTESE", "PRÓTESE", "ORTESES", "ÓRTESES", "PROTESES", "PRÓTESES",
+        "FRALDAS", "FRALDA", "ABSORVENTE", "ABSORVENTES",
+        "OXIMETRO", "OXÍMETRO", "OXIMETROS", "OXÍMETROS", "TERMOMETRO", "TERMÔMETRO",
+        "ESTETOSCOPIO", "ESTETOSCÓPIO", "ESFIGMOMANOMETRO", "ESFIGMOMANÔMETRO",
+        "BALANCA", "BALANÇA", "ANTROPOMETRO", "ANTROPÔMETRO",
+        "NEBULIZADOR", "INALADOR", "ASPIRADOR CIRURGICO", "ASPIRADOR CIRÚRGICO"
     ]
     # Termos POSITIVOS padrão (Unificado)
     TERMOS_POSITIVOS_PADRAO = [
@@ -209,13 +234,52 @@ class PNCPClient:
     ]
 
     # Subconjunto prioritário para reduzir falsos positivos (usado como filtro inicial)
+    # REGRA: Termos devem indicar EQUIPAMENTO ou PRODUTO, não apenas área/setor
     TERMOS_PRIORITARIOS = [
+        # Locação/Comodato de Equipamentos (foco principal Medcal)
         "LOCAÇÃO DE EQUIPAMENTOS", "LOCAÇÃO DE EQUIPAMENTO", "ALUGUEL DE EQUIPAMENTOS", "COMODATO",
+        "LOCACAO DE EQUIPAMENTOS", "LOCACAO DE EQUIPAMENTO", "ALUGUEL DE EQUIPAMENTO",
+        "DISPONIBILIZAÇÃO DE EQUIPAMENTO", "DISPONIBILIZACAO DE EQUIPAMENTO",
+        "CESSÃO DE EQUIPAMENTO", "CESSAO DE EQUIPAMENTO",
+        
+        # Equipamentos ESPECÍFICOS (não apenas a área)
         "EQUIPAMENTO DE HEMATOLOGIA", "EQUIPAMENTO DE BIOQUIMICA", "EQUIPAMENTO DE COAGULACAO",
-        "EQUIPAMENTO DE IMUNOLOGIA", "EQUIPAMENTO DE IONOGRAMA", "ANÁLISE CLÍNICA", "ANÁLISES CLÍNICAS",
-        "REAGENTES", "REAGENTE", "INSUMOS LABORATORIAIS", "INSUMO LABORATORIAL",
-        "GASOMETRIA", "POCT", "COAGULAÇÃO", "HEMATOLOGIA", "BIOQUIMICA", "IMUNOLOGIA", "IONOGRAMA", "HORMÔNIOS", "HORMONIOS",
-        "TUBOS", "TUBO", "LUVA", "LUVAS", "MÁSCARA", "MASCARA", "COLETA DE SANGUE", "EQUIPAMENTO AUTOMATIZADO", "EQUIPAMENTOS AUTOMATIZADOS"
+        "EQUIPAMENTO DE IMUNOLOGIA", "EQUIPAMENTO DE IONOGRAMA", "EQUIPAMENTO DE GASOMETRIA",
+        "ANALISADOR HEMATOLOGICO", "ANALISADOR HEMATOLÓGICO", "ANALISADOR DE HEMATOLOGIA",
+        "ANALISADOR BIOQUIMICO", "ANALISADOR BIOQUÍMICO", "ANALISADOR DE BIOQUIMICA",
+        "ANALISADOR DE COAGULACAO", "ANALISADOR DE COAGULAÇÃO", "COAGULOMETRO", "COAGULÔMETRO",
+        "ANALISADOR DE IMUNOLOGIA", "ANALISADOR IMUNOLOGICO", "ANALISADOR IMUNOLÓGICO",
+        "ANALISADOR DE IONOGRAMA", "ANALISADOR DE IONS", "ANALISADOR DE ELETRÓLITOS",
+        "ANALISADOR DE GASOMETRIA", "HEMOGASOMETRO", "HEMOGASÔMETRO", "GASOMETRO", "GASÔMETRO",
+        "EQUIPAMENTO AUTOMATIZADO", "EQUIPAMENTOS AUTOMATIZADOS",
+        "EQUIPAMENTO LABORATORIAL", "EQUIPAMENTOS LABORATORIAIS",
+        
+        # Reagentes e Insumos ESPECÍFICOS
+        "REAGENTES PARA HEMATOLOGIA", "REAGENTE HEMATOLOGICO", "REAGENTES HEMATOLOGICOS",
+        "REAGENTES PARA BIOQUIMICA", "REAGENTE BIOQUIMICO", "REAGENTES BIOQUIMICOS",
+        "REAGENTES PARA COAGULACAO", "REAGENTE COAGULACAO", "REAGENTES COAGULACAO",
+        "REAGENTES PARA IMUNOLOGIA", "REAGENTE IMUNOLOGICO", "REAGENTES IMUNOLOGICOS",
+        "REAGENTES PARA IONOGRAMA", "REAGENTE IONOGRAMA", "REAGENTES IONOGRAMA",
+        "REAGENTES PARA GASOMETRIA", "REAGENTE GASOMETRIA", "REAGENTES GASOMETRIA",
+        "REAGENTES LABORATORIAIS", "REAGENTE LABORATORIAL",
+        "INSUMOS LABORATORIAIS", "INSUMO LABORATORIAL",
+        "REAGENTES PARA LABORATORIO", "REAGENTES DE LABORATORIO",
+        
+        # Análises Clínicas (termos compostos mais específicos)
+        "LABORATORIO DE ANALISES CLINICAS", "LABORATÓRIO DE ANÁLISES CLÍNICAS",
+        "ANALISES CLINICAS", "ANÁLISES CLÍNICAS",
+        
+        # Consumíveis ESPECÍFICOS
+        "TUBO DE COLETA", "TUBOS DE COLETA", "TUBO VACUO", "TUBO VÁCUO",
+        "TUBO EDTA", "TUBO HEPARINA", "TUBO CITRATO",
+        "COLETA DE SANGUE", "COLETA SANGUINEA", "COLETA SANGUÍNEA",
+        "LUVA DE PROCEDIMENTO", "LUVAS DE PROCEDIMENTO",
+        "MASCARA CIRURGICA", "MÁSCARA CIRÚRGICA", "MASCARAS CIRURGICAS",
+        
+        # Manutenção de equipamentos laboratoriais
+        "MANUTENCAO DE EQUIPAMENTO LABORATORIAL", "MANUTENÇÃO DE EQUIPAMENTO LABORATORIAL",
+        "MANUTENCAO PREVENTIVA E CORRETIVA", "MANUTENÇÃO PREVENTIVA E CORRETIVA",
+        "CALIBRACAO DE EQUIPAMENTO", "CALIBRAÇÃO DE EQUIPAMENTO"
     ]
     # Bloqueios adicionais para eventos/inscrições genéricas
     TERMOS_EVENTOS_NEGATIVOS = [
@@ -280,9 +344,10 @@ class PNCPClient:
 
         total_api = 0
 
-        # 6=Pregão, 8=Dispensa, 9=Inexigibilidade
-        for modalidade in [6, 8, 9]:
-            modalidade_nome = {6: "Pregão", 8: "Dispensa", 9: "Inexigibilidade"}.get(modalidade)
+        # 6=Pregão Eletrônico, 8=Dispensa de Licitação/Compra Direta, 12=Dispensa Emergencial
+        # Removido: 9=Inexigibilidade (já tem fornecedor definido, não vale participar)
+        for modalidade in [6, 8, 12]:
+            modalidade_nome = {6: "Pregão Eletrônico", 8: "Dispensa/Compra Direta", 12: "Dispensa Emergencial"}.get(modalidade)
 
             for uf in estados:
                 print(f"\n📍 Buscando {modalidade_nome} em {uf}...")
@@ -397,7 +462,7 @@ class PNCPClient:
             "pncp_id": f"{cnpj}-{ano}-{seq}",
             "orgao": orgao.get('razaoSocial', 'Desconhecido'),
             "uf": orgao.get('ufSigla', 'BR'),
-            "modalidade": {6: "Pregão", 8: "Dispensa", 9: "Inexigibilidade"}.get(item.get('modalidadeId'), "Outra"),
+            "modalidade": {6: "Pregão", 8: "Dispensa", 9: "Inexigibilidade", 12: "Emergencial"}.get(item.get('modalidadeId'), "Outra"),
             "data_sessao": item.get('dataAberturaOuSessao'),
             "data_publicacao": item.get('dataPublicacaoPncp'),
             "data_inicio_proposta": item.get('dataInicioRecebimentoProposta'),

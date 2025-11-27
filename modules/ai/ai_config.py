@@ -30,14 +30,12 @@ def configure_genai():
     genai.configure(api_key=api_key)
 
 # --- Model Configurations ---
-# --- Model Configurations ---
 # Lista de modelos para tentar (do mais rápido/barato para o mais robusto)
 AVAILABLE_MODELS = [
-    'gemini-1.5-flash',
-    'gemini-1.5-flash-latest',
-    'gemini-1.5-flash-001',
-    'gemini-pro',
-    'gemini-1.0-pro'
+    'gemini-2.0-flash',
+    'gemini-2.0-flash-lite',
+    'gemini-2.5-flash',
+    'gemini-flash-latest',
 ]
 
 def get_model(temperature=0.2):
@@ -47,7 +45,7 @@ def get_model(temperature=0.2):
     # apenas na geração. Então vamos retornar o configurado com o primeiro da lista ou um fixo.
     # O erro 404 acontece na chamada, então aqui apenas definimos o nome preferencial.
     
-    model_name = 'gemini-1.5-flash' # Tentativa principal
+    model_name = 'gemini-2.0-flash' # Modelo gratuito atualizado (Nov 2025)
     
     return genai.GenerativeModel(
         model_name,

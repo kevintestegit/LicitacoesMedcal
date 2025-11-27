@@ -1,24 +1,96 @@
 /* Apple-style Minimalist Theme for Streamlit */
 
 /* Import Inter Font */
-@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap');
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap');
 
 /* Global Reset & Typography */
 html, body, [class*="css"] {
     font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif;
-    color: #1d1d1f;
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+}
+
+/* Smooth scrolling */
+* {
+    scroll-behavior: smooth;
 }
 
 /* Main Background */
 .stApp {
-    background-color: #F5F5F7; /* Apple Light Gray */
+    background: linear-gradient(180deg, #F8F9FC 0%, #F0F2F6 100%);
 }
 
-/* Sidebar */
+/* ===== SIDEBAR SIMPLES E FUNCIONAL ===== */
 [data-testid="stSidebar"] {
-    background-color: #FFFFFF;
-    border-right: 1px solid #e5e5e5;
+    background: #1a1a2e !important;
 }
+
+[data-testid="stSidebar"] > div:first-child {
+    background: #1a1a2e !important;
+    display: flex !important;
+    flex-direction: column !important;
+    min-height: 100vh !important;
+}
+
+[data-testid="stSidebar"] [data-testid="stSidebarContent"] {
+    display: flex !important;
+    flex-direction: column !important;
+    flex: 1 !important;
+    height: 100% !important;
+}
+
+/* Todo texto no sidebar deve ser branco */
+[data-testid="stSidebar"] * {
+    color: #ffffff !important;
+}
+
+/* Estilo dos itens de menu (radio buttons) */
+[data-testid="stSidebar"] .stRadio label {
+    background: rgba(255, 255, 255, 0.08) !important;
+    border-radius: 6px !important;
+    padding: 8px 12px !important;
+    margin: 2px 8px !important;
+    border: 1px solid rgba(255, 255, 255, 0.1) !important;
+    transition: all 0.2s ease !important;
+    font-size: 13px !important;
+    width: 100% !important;
+    min-width: 140px !important;
+    box-sizing: border-box !important;
+}
+
+/* Container do radio group com largura fixa */
+[data-testid="stSidebar"] .stRadio > div {
+    width: 100% !important;
+}
+
+[data-testid="stSidebar"] .stRadio > div[role="radiogroup"] {
+    width: 100% !important;
+    display: flex !important;
+    flex-direction: column !important;
+}
+
+/* Texto menor nos itens do menu */
+[data-testid="stSidebar"] .stRadio label p,
+[data-testid="stSidebar"] .stRadio label span {
+    font-size: 13px !important;
+}
+
+[data-testid="stSidebar"] .stRadio label:hover {
+    background: rgba(255, 255, 255, 0.15) !important;
+}
+
+/* Item selecionado */
+[data-testid="stSidebar"] .stRadio label:has(input:checked) {
+    background: rgba(99, 102, 241, 0.3) !important;
+    border-color: rgba(99, 102, 241, 0.5) !important;
+}
+
+/* Esconder o círculo do radio */
+[data-testid="stSidebar"] .stRadio input[type="radio"] {
+    display: none !important;
+}
+
+/* ===== FIM SIDEBAR ===== */
 
 /* Cards (Custom Container) */
 .css-card {
@@ -43,44 +115,89 @@ h1, h2, h3 {
     color: #1d1d1f;
 }
 
-h1 { font-size: 32px; margin-bottom: 16px; }
-h2 { font-size: 24px; margin-bottom: 12px; }
-h3 { font-size: 19px; margin-bottom: 8px; }
+h1 { font-size: 22px !important; margin-bottom: 10px; }
+h2 { font-size: 17px !important; margin-bottom: 8px; }
+h3 { font-size: 14px !important; margin-bottom: 6px; }
+
+/* Tamanho de fonte global para o conteúdo principal */
+.stApp p, .stApp span, .stApp div {
+    font-size: 13px;
+}
 
 /* Metrics */
 [data-testid="stMetricValue"] {
-    font-size: 28px;
-    font-weight: 700;
-    color: #0071e3; /* Apple Blue */
+    font-size: 18px !important;
+    font-weight: 700 !important;
+    background: linear-gradient(135deg, #6366f1 0%, #8b5cf6 100%);
+    -webkit-background-clip: text;
+    -webkit-text-fill-color: transparent;
+    background-clip: text;
 }
 
 [data-testid="stMetricLabel"] {
-    font-size: 14px;
+    font-size: 10px !important;
     font-weight: 500;
-    color: #86868b;
+    color: #64748b !important;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+}
+
+[data-testid="stMetricDelta"] {
+    font-size: 10px !important;
+}
+
+/* Expanders */
+[data-testid="stExpander"] summary span {
+    font-size: 13px !important;
+}
+
+[data-testid="stExpander"] div[data-testid="stMarkdownContainer"] p {
+    font-size: 13px !important;
+}
+
+/* Selectbox e inputs menores */
+.stSelectbox label, .stTextInput label, .stNumberInput label {
+    font-size: 12px !important;
+}
+
+.stSelectbox div[data-baseweb="select"] {
+    font-size: 13px !important;
+}
+
+/* Tabs menores */
+.stTabs [data-baseweb="tab"] {
+    font-size: 13px !important;
+    padding: 8px 16px !important;
+}
+
+/* Colunas de métricas mais compactas */
+[data-testid="column"] {
+    padding: 0 8px !important;
 }
 
 /* Buttons */
 .stButton > button {
-    background-color: #0071e3;
+    background: linear-gradient(135deg, #6366f1 0%, #8b5cf6 100%);
     color: white;
-    border-radius: 980px; /* Pill shape */
+    border-radius: 10px;
     border: none;
-    padding: 8px 20px;
-    font-weight: 500;
+    padding: 10px 24px;
+    font-weight: 600;
     font-size: 14px;
-    box-shadow: 0 2px 4px rgba(0,113,227,0.2);
-    transition: all 0.2s ease;
+    box-shadow: 0 4px 14px rgba(99, 102, 241, 0.35);
+    transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+    letter-spacing: -0.01em;
 }
 
 .stButton > button:hover {
-    background-color: #0077ed;
-    box-shadow: 0 4px 8px rgba(0,113,227,0.3);
-    transform: scale(1.02);
+    background: linear-gradient(135deg, #4f46e5 0%, #7c3aed 100%);
+    box-shadow: 0 6px 20px rgba(99, 102, 241, 0.45);
+    transform: translateY(-2px);
 }
 
 .stButton > button:active {
-    transform: scale(0.98);
+    transform: translateY(0);
+    box-shadow: 0 2px 8px rgba(99, 102, 241, 0.3);
 }
 
 /* Secondary/Outline Buttons (if needed, usually Streamlit doesn't distinguish easily without keys) */
@@ -112,50 +229,272 @@ h3 { font-size: 19px; margin-bottom: 8px; }
     border-radius: 10px;
     border: 1px solid #d2d2d7;
     background-color: #ffffff;
+    color: #1d1d1f;
 }
 
-.stTextInput > div > div > input:focus, .stSelectbox > div > div > div:focus-within {
-    border-color: #0071e3;
-    box-shadow: 0 0 0 2px rgba(0,113,227,0.2);
+.stTextArea textarea {
+    background-color: #ffffff !important;
+    color: #1d1d1f !important;
+    border: 1px solid #d2d2d7 !important;
+    border-radius: 10px !important;
+}
+
+.stTextInput > div > div > input:focus, .stSelectbox > div > div > div:focus-within, .stTextArea textarea:focus {
+    border-color: #0071e3 !important;
+    box-shadow: 0 0 0 2px rgba(0,113,227,0.2) !important;
+    color: #1d1d1f !important;
 }
 
 /* Custom Classes for Injection */
 .card-header {
-    font-size: 14px;
+    font-size: 12px;
     text-transform: uppercase;
     color: #86868b;
     font-weight: 600;
-    margin-bottom: 8px;
+    margin-bottom: 6px;
 }
 
 .card-title {
-    font-size: 20px;
+    font-size: 15px;
     font-weight: 600;
     color: #1d1d1f;
     margin-bottom: 4px;
 }
 
 .card-subtitle {
-    font-size: 14px;
+    font-size: 12px;
     color: #86868b;
-    margin-bottom: 16px;
+    margin-bottom: 12px;
 }
 
 .tag {
     display: inline-block;
-    padding: 4px 10px;
-    border-radius: 6px;
-    font-size: 12px;
+    padding: 3px 8px;
+    border-radius: 5px;
+    font-size: 11px;
     font-weight: 500;
-    margin-right: 6px;
+    margin-right: 4px;
 }
 
-.tag-blue { background-color: #e8f2ff; color: #0071e3; }
-.tag-green { background-color: #e8f8f0; color: #1d9d74; }
-.tag-orange { background-color: #fff4e5; color: #f58e00; }
-.tag-red { background-color: #feeceb; color: #e02e2e; }
+.tag-blue { background-color: #eef2ff; color: #6366f1; }
+.tag-green { background-color: #ecfdf5; color: #10b981; }
+.tag-orange { background-color: #fff7ed; color: #f97316; }
+.tag-red { background-color: #fef2f2; color: #ef4444; }
+
+/* Dashboard tweaks */
+.dashboard-card { margin-bottom: 0; }
+
+.dashboard-card + [data-testid="stExpander"],
+.dashboard-card + [data-testid="st-expander"] {
+    margin-top: -10px;
+    margin-bottom: 20px;
+}
+
+.dashboard-card + [data-testid="stExpander"] > details,
+.dashboard-card + [data-testid="st-expander"] > details {
+    background-color: #ffffff;
+    border: 1px solid rgba(0,0,0,0.04);
+    border-top: none;
+    border-radius: 0 0 18px 18px;
+    box-shadow: 0 4px 24px rgba(0,0,0,0.04);
+    overflow: hidden;
+}
+
+.dashboard-card + [data-testid="stExpander"] summary,
+.dashboard-card + [data-testid="st-expander"] summary {
+    padding: 14px 18px;
+    font-weight: 600;
+    color: #1d1d1f;
+}
+
+.dashboard-card + [data-testid="stExpander"] summary:hover,
+.dashboard-card + [data-testid="st-expander"] summary:hover {
+    background-color: #f5f5f7;
+}
+
+.dashboard-card + [data-testid="stExpander"] svg,
+.dashboard-card + [data-testid="st-expander"] svg {
+    color: #86868b;
+}
 
 /* Hide Streamlit Branding */
 #MainMenu {visibility: hidden;}
 footer {visibility: hidden;}
-header {visibility: hidden;}
+
+/* Expander Styling */
+[data-testid="stExpander"] {
+    border: 1px solid #e2e8f0;
+    border-radius: 12px;
+    overflow: hidden;
+    background: #ffffff;
+    box-shadow: 0 1px 3px rgba(0, 0, 0, 0.05);
+    margin-bottom: 8px;
+}
+
+[data-testid="stExpander"] summary {
+    padding: 14px 18px;
+    font-weight: 600;
+    color: #1e293b;
+    transition: background 0.2s ease;
+}
+
+[data-testid="stExpander"] summary:hover {
+    background: #f8fafc;
+}
+
+/* Selectbox & Inputs */
+.stSelectbox > div > div,
+.stTextInput > div > div > input,
+.stTextArea > div > div > textarea {
+    border-radius: 10px !important;
+    border: 1.5px solid #e2e8f0 !important;
+    transition: all 0.2s ease !important;
+}
+
+.stSelectbox > div > div:focus-within,
+.stTextInput > div > div > input:focus,
+.stTextArea > div > div > textarea:focus {
+    border-color: #6366f1 !important;
+    box-shadow: 0 0 0 3px rgba(99, 102, 241, 0.15) !important;
+}
+
+/* Progress Bar */
+.stProgress > div > div > div {
+    background: linear-gradient(135deg, #6366f1 0%, #8b5cf6 100%);
+    border-radius: 10px;
+}
+
+/* Tabs */
+.stTabs [data-baseweb="tab-list"] {
+    gap: 8px;
+    background: #f1f5f9;
+    padding: 4px;
+    border-radius: 12px;
+}
+
+.stTabs [data-baseweb="tab"] {
+    border-radius: 8px;
+    padding: 8px 16px;
+    font-weight: 500;
+    color: #64748b;
+    transition: all 0.2s ease;
+}
+
+.stTabs [aria-selected="true"] {
+    background: #ffffff !important;
+    color: #1e293b !important;
+    box-shadow: 0 1px 3px rgba(0, 0, 0, 0.1);
+}
+
+/* Success/Info/Warning/Error Messages */
+.stSuccess, .stInfo, .stWarning, .stError {
+    border-radius: 10px;
+    border: none;
+}
+
+/* Data Editor */
+[data-testid="stDataEditor"] {
+    border-radius: 12px;
+    overflow: hidden;
+    border: 1px solid #e2e8f0;
+}
+
+/* Checkbox styling */
+.stCheckbox label {
+    font-weight: 500;
+    color: #475569;
+}
+
+/* Multiselect */
+.stMultiSelect > div {
+    border-radius: 10px !important;
+}
+
+/* Number Input */
+.stNumberInput > div > div > input {
+    border-radius: 10px !important;
+    border: 1.5px solid #e2e8f0 !important;
+}
+
+/* Slider */
+.stSlider > div > div > div > div {
+    background: linear-gradient(135deg, #6366f1 0%, #8b5cf6 100%) !important;
+}
+
+/* Date Input */
+.stDateInput > div > div > input {
+    border-radius: 10px !important;
+    border: 1.5px solid #e2e8f0 !important;
+}
+
+/* Spinner/Loading */
+.stSpinner > div {
+    border-color: #6366f1 !important;
+    border-right-color: transparent !important;
+}
+
+/* Column Gap */
+[data-testid="column"] {
+    padding: 0 8px;
+}
+
+/* Main content area */
+.main .block-container {
+    padding-top: 2rem;
+    padding-bottom: 2rem;
+    max-width: 1200px;
+}
+
+/* Smooth animations for all interactive elements */
+button, input, select, textarea, a, [role="button"] {
+    transition: all 0.2s cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+/* Custom scrollbar */
+::-webkit-scrollbar {
+    width: 8px;
+    height: 8px;
+}
+
+::-webkit-scrollbar-track {
+    background: #f1f5f9;
+    border-radius: 4px;
+}
+
+::-webkit-scrollbar-thumb {
+    background: #cbd5e1;
+    border-radius: 4px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+    background: #94a3b8;
+}
+
+/* File uploader */
+[data-testid="stFileUploader"] {
+    border: 2px dashed #e2e8f0;
+    border-radius: 12px;
+    padding: 20px;
+    transition: all 0.2s ease;
+}
+
+[data-testid="stFileUploader"]:hover {
+    border-color: #6366f1;
+    background: rgba(99, 102, 241, 0.02);
+}
+
+/* Tooltip styling */
+[data-testid="stTooltipIcon"] {
+    color: #94a3b8;
+}
+
+/* Download button */
+.stDownloadButton > button {
+    background: linear-gradient(135deg, #10b981 0%, #059669 100%);
+    box-shadow: 0 4px 14px rgba(16, 185, 129, 0.35);
+}
+
+.stDownloadButton > button:hover {
+    background: linear-gradient(135deg, #059669 0%, #047857 100%);
+    box-shadow: 0 6px 20px rgba(16, 185, 129, 0.45);
+}

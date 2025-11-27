@@ -1,34 +1,21 @@
 """
-Módulo de Gestão Financeira e Conciliação Bancária
+Módulo de Gestão de Extratos Bancários - Banco do Brasil
+Versão simplificada focada no extrato padrão BB
 """
 
-# Lazy imports - importa apenas quando necessário para evitar dependências circulares
-def __getattr__(name):
-    if name == 'ContaBancaria':
-        from .bank_models import ContaBancaria
-        return ContaBancaria
-    elif name == 'ExtratoBancario':
-        from .bank_models import ExtratoBancario
-        return ExtratoBancario
-    elif name == 'Fatura':
-        from .bank_models import Fatura
-        return Fatura
-    elif name == 'Conciliacao':
-        from .bank_models import Conciliacao
-        return Conciliacao
-    elif name == 'ExtratoParser':
-        from .extrato_parser import ExtratoParser
-        return ExtratoParser
-    elif name == 'ConciliadorFinanceiro':
-        from .conciliador import ConciliadorFinanceiro
-        return ConciliadorFinanceiro
-    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+from .bank_models import ExtratoBB, ResumoMensal
+from .extrato_parser import ExtratoBBParser, importar_extrato_bb, processar_texto_extrato
+from .database import init_finance_db, get_finance_session
 
 __all__ = [
-    'ExtratoBancario',
-    'Fatura',
-    'Conciliacao',
-    'ContaBancaria',
-    'ExtratoParser',
-    'ConciliadorFinanceiro'
+    'ExtratoBB',
+    'ResumoMensal', 
+    'ExtratoBBParser',
+    'importar_extrato_bb',
+    'processar_texto_extrato',
+    'init_finance_db',
+    'get_finance_session'
 ]
+
+
+
