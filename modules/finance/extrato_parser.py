@@ -35,23 +35,29 @@ class ExtratoBBParser:
         self.avisos = []
         if ano is None: ano = self._detectar_ano(file_path)
         
-        xl = pd.ExcelFile(file_path, engine='openpyxl')
-        todos_lancamentos = []
-        resumos = {}
-        
-        for sheet_name in xl.sheet_names:
-            if sheet_name.lower() == 'geral': continue
-            mes = self._identificar_mes(sheet_name)
-            if not mes:
-                self.avisos.append(f"Aba '{sheet_name}' não reconhecida como mês")
-                continue
+        with pd.ExcelFile(file_path, engine='openpyxl') as xl:
+            todos_lancamentos = []
+            resumos = {}
             
-            lancamentos = self._parse_planilha(xl, sheet_name, mes, ano, file_path)
-            todos_lancamentos.extend(lancamentos)
-            if lancamentos:
-                resumos[mes] = self._calcular_resumo(lancamentos, mes, ano)
+            for sheet_name in xl.sheet_names:
+                if sheet_name.lower() == 'geral': continue
+                mes = self._identificar_mes(sheet_name)
+                if not mes:
+                    self.avisos.append(f"Aba '{sheet_name}' não reconhecida como mês")
+                    continue
+                
+                lancamentos = self._parse_planilha(xl, sheet_name, mes, ano, file_path)
+                todos_lancamentos.extend(lancamentos)
+                if lancamentos:
+                    resumos[mes] = self._calcular_resumo(lancamentos, mes, ano)
         
-        return {'lancamentos': todos_lancamentos, 'resumos': resumos, 'total_lancamentos': len(todos_lancamentos), 'erros': self.erros, 'avisos': self.avisos}
+        return {
+            'lancamentos': todos_lancamentos,
+            'resumos': resumos,
+            'total_lancamentos': len(todos_lancamentos),
+            'erros': self.erros,
+            'avisos': self.avisos
+        }
     
     def _parse_planilha(self, xl: pd.ExcelFile, sheet_name: str, mes: str, ano: int, arquivo: str) -> List[Dict]:
         df = pd.read_excel(xl, sheet_name=sheet_name, engine='openpyxl')
@@ -68,16 +74,29 @@ class ExtratoBBParser:
         
         lancamentos = []
         linha_anterior = None
-        for idx, row in df.iterrows():
+        # OTIMIZADO: itertuples é 10-50x mais rápido que iterrows
+        for row in df.itertuples(index=True):
             try:
-                lancamento = self._processar_linha(row, linha_anterior, mes, ano, arquivo)
+                # Converte namedtuple para Series mantendo compatibilidade
+                row_series = pd.Series({
+                    'Status': getattr(row, 'Status', None),
+                    'Dt. balancete': row[2] if len(row) > 2 else None,
+                    'Ag. origem': row[3] if len(row) > 3 else None,
+                    'Lote': row[4] if len(row) > 4 else None,
+                    'Histórico': row[5] if len(row) > 5 else None,
+                    'Documento': row[6] if len(row) > 6 else None,
+                    'Valor R$': row[7] if len(row) > 7 else None,
+                    'Fatura': row[8] if len(row) > 8 else None,
+                    'Tipo': row[9] if len(row) > 9 else None
+                })
+                lancamento = self._processar_linha(row_series, linha_anterior, mes, ano, arquivo)
                 if lancamento:
                     lancamentos.append(lancamento)
                     linha_anterior = None
-                elif self._is_linha_complementar(row):
-                    linha_anterior = row
+                elif self._is_linha_complementar(row_series):
+                    linha_anterior = row_series
             except Exception as e:
-                self.erros.append(f"Erro na linha {idx} da aba '{sheet_name}': {str(e)}")
+                self.erros.append(f"Erro na linha {row.Index} da aba '{sheet_name}': {str(e)}")
                 continue
         return lancamentos
     
@@ -90,6 +109,10 @@ class ExtratoBBParser:
         
         valor = self._parse_valor(row.get('Valor R$', 0))
         if valor == 0: return None
+
+        # Linhas de "900 - Movimentacao do dia" são resumos e não devem impactar os totais
+        historico_lower = historico.lower()
+        is_movimentacao_dia = historico_lower.startswith('900') and 'movimenta' in historico_lower and 'dia' in historico_lower
         
         historico_complementar = None
         if linha_anterior is not None:
@@ -98,13 +121,15 @@ class ExtratoBBParser:
                 historico_complementar = hist_comp
         
         tipo_original = self._normalizar_tipo(row.get('Tipo'))
-        tipo_final = tipo_original if tipo_original else self._inferir_categoria_pelo_historico(historico)
+        tipo_final = 'Movimentacao do Dia' if is_movimentacao_dia else (tipo_original if tipo_original else self._inferir_categoria_pelo_historico(historico))
         
         debit_categories = ['Compra com Cartão', 'Impostos', 'Pix - Enviado', 'Pagamento Boleto', 'Pagamento Fornecedor', 'Pagamento Título', 'Pagamento Ourocap', 'Tarifa Bancária', 'Transferência Enviada', 'Cheque', 'Saque']
         credit_categories = ['Ordem Bancária', 'Recebimento SESAP', 'Recebimento Base Aérea', 'Pix - Recebido', 'Transferência Recebida', 'Crédito Salário', 'Depósito', 'Estorno', 'Depósito Corban', 'Hematologia', 'Coagulacao', 'Coagulação', 'Ionograma', 'Base']
         neutral_categories = ['Aplicação', 'Aplicação Financeira', 'Resgate', 'Resgate Investimento', 'BB Rende Fácil']
         
-        if tipo_final in debit_categories: valor = -abs(valor)
+        if tipo_final == 'Movimentacao do Dia':
+            valor = 0.0
+        elif tipo_final in debit_categories: valor = -abs(valor)
         elif tipo_final in credit_categories: valor = abs(valor)
         elif any(cat in tipo_final for cat in ['Hematologia', 'Coagulacao', 'Ionograma']): valor = abs(valor)
         elif tipo_final in neutral_categories: valor = abs(valor)
@@ -131,12 +156,18 @@ class ExtratoBBParser:
         hist_upper = historico.upper()
         match_code = re.match(r'^(\d+)', historico)
         code = match_code.group(1) if match_code else None
-        
+    
         if code:
+            if code == '500': return 'EMPRESTIMO PRONAMPE'
+            # TED-Crédito em Conta (976) é ENTRADA → transferência recebida
+            if code == '976':
+                return 'Transferência Recebida'
+
             if code == '821': return 'Pix - Recebido'
             if code == '144': return 'Pix - Enviado'
             if code == '632': 
-                if '12 SEC TES NAC' in hist_upper or 'AEREA' in hist_upper: return 'Recebimento Base Aérea'
+                if '12 SEC TES NAC' in hist_upper or 'AEREA' in hist_upper: 
+                    return 'Recebimento Base Aérea'
                 return 'Recebimento SESAP'
             if code == '234': return 'Compra com Cartão'
             if code == '375': return 'Impostos'
@@ -150,7 +181,7 @@ class ExtratoBBParser:
             if code == '870': return 'Transferência Recebida'
             if code == '830': return 'Depósito Corban'
             if code == '969': return 'Cheque Compensado'
-            
+    
         if 'PIX' in hist_upper:
             if any(x in hist_upper for x in ['RECEBIDO', 'CREDIT', 'CREDI']): return 'Pix - Recebido'
             return 'Pix - Enviado'
@@ -166,12 +197,14 @@ class ExtratoBBParser:
         if 'CHEQUE' in hist_upper: return 'Cheque'
         if 'SISPAG' in hist_upper or 'FORNECEDOR' in hist_upper: return 'Pagamento Fornecedor'
         return 'Outros'
+
     
     def _localizar_cabecalho(self, df: pd.DataFrame) -> Tuple[Optional[pd.DataFrame], int]:
-        for idx, row in df.iterrows():
-            row_str = ' '.join([str(val).lower() for val in row.values if pd.notna(val)])
+        # OTIMIZADO: itertuples mais rápido que iterrows
+        for row in df.itertuples():
+            row_str = ' '.join([str(val).lower() for val in row[1:] if pd.notna(val)])
             if 'status' in row_str or 'dt. balancete' in row_str or 'balancete' in row_str:
-                return df.iloc[idx+1:].reset_index(drop=True), idx
+                return df.iloc[row.Index+1:].reset_index(drop=True), row.Index
         if any('status' in str(col).lower() for col in df.columns): return df, 0
         return None, -1
     
@@ -253,7 +286,7 @@ class ExtratoBBParser:
         return datetime.now().year
     
     def _calcular_resumo(self, lancamentos: List[Dict], mes: str, ano: int) -> Dict:
-        tipos_ignorados = ['Aplicação Financeira', 'Resgate Investimento', 'Aplicação', 'Resgate']
+        tipos_ignorados = ['Aplicação Financeira', 'Resgate Investimento', 'Aplicação', 'Resgate', 'Movimentacao do Dia', 'Emprestimo Pronampe']
         valores_reais_entradas = []
         valores_reais_saidas = []
         for l in lancamentos:
@@ -363,13 +396,17 @@ class ExtratoBBParser:
                             break
             
             if not historico: historico = "Lançamento Importado"
-            tipo_inferido = self._inferir_categoria_pelo_historico(historico)
+            hist_lower = historico.lower()
+            is_movimentacao_dia = hist_lower.startswith('900') and 'movimenta' in hist_lower and 'dia' in hist_lower
+            tipo_inferido = 'Movimentacao do Dia' if is_movimentacao_dia else self._inferir_categoria_pelo_historico(historico)
             
-            debit_categories = ['Compra com Cartão', 'Impostos', 'Pix - Enviado', 'Pagamento Boleto', 'Pagamento Fornecedor', 'Pagamento Título', 'Tarifa Bancária', 'Transferência Enviada', 'Cheque', 'Saque', 'Aplicação', 'Aplicação Financeira', 'Pagamento Ourocap']
+            debit_categories = ['Compra com Cartão', 'Impostos', 'Pix - Enviado', 'Pagamento Boleto', 'Pagamento Fornecedor', 'Pagamento Título', 'Tarifa Bancária', 'Transferência Enviada', 'Cheque', 'Saque', 'Aplicação', 'Aplicação Financeira', 'Pagamento Ourocap', 'Emprestimo Pronampe']
             credit_categories = ['Ordem Bancária', 'Recebimento SESAP', 'Recebimento Base Aérea', 'Pix - Recebido', 'Transferência Recebida', 'Crédito Salário', 'Depósito', 'Estorno', 'Depósito Corban']
             neutral_categories = ['Aplicação', 'Aplicação Financeira', 'Resgate', 'Resgate Investimento', 'BB Rende Fácil']
             
-            if tipo_inferido in debit_categories: valor = -abs(valor)
+            if tipo_inferido == 'Movimentacao do Dia':
+                valor = 0.0
+            elif tipo_inferido in debit_categories: valor = -abs(valor)
             elif tipo_inferido in credit_categories: valor = abs(valor)
             elif tipo_inferido in neutral_categories: valor = abs(valor)
 

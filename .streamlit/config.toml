@@ -1,7 +1,36 @@
+[server]
+maxUploadSize = 200
+enableXsrfProtection = true
+enableCORS = false
+
+[runner]
+magicEnabled = false
+fastReruns = true
+
+[client]
+showErrorDetails = true
+toolbarMode = "minimal"
+
+[browser]
+gatherUsageStats = false
+
+# Configurações de performance
+[server.fileWatcher]
+serverAddress = "localhost"
+serverPort = 8501
+
 [theme]
-base="light"
-primaryColor="#6366f1"
-backgroundColor="#F5F5F7"
-secondaryBackgroundColor="#1a1a2e"
-textColor="#1d1d1f"
-font="sans serif"
+# Força tema claro para combinar com o CSS de fundo claro
+base = "light"
+primaryColor = "#4CAF50"
+backgroundColor = "#F8F9FC"
+secondaryBackgroundColor = "#FFFFFF"
+textColor = "#1a1a1a"
+
+# Ajustes explícitos da sidebar (evita cores vazias que quebram o tema)
+[theme.sidebar]
+backgroundColor = "#1a1a2e"
+textColor = "#ffffff"
+widgetBackgroundColor = "#1f1f3a"
+widgetBorderColor = "#2a2a40"
+skeletonBackgroundColor = "#2a2a40"

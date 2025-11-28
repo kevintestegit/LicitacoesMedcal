@@ -9,3 +9,4 @@ playwright
 googlesearch-python
 pypdf
 rapidfuzz
+geopy

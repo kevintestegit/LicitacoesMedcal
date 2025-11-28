@@ -1,0 +1,238 @@
+{
+    "COORD_natal - rn": [
+        -5.8193078,
+        -35.2126281
+    ],
+    "COORD_municipio do recife - br": [
+        -8.806423,
+        -35.1863239
+    ],
+    "ROUTE_natal - rn_municipio do recife - br": 384.64,
+    "COORD_mata grande - br": [
+        -10.1522561,
+        -37.1370951
+    ],
+    "ROUTE_natal - rn_mata grande - br": 731.22,
+    "COORD_frutuoso gomes - br": [
+        -6.1585113,
+        -37.8408614
+    ],
+    "ROUTE_natal - rn_frutuoso gomes - br": 369.15,
+    "COORD_universidade estadual da paraiba - br": [
+        -7.8925229,
+        -37.1267614
+    ],
+    "ROUTE_natal - rn_universidade estadual da paraiba - br": 369.25,
+    "COORD_currais novos - br": [
+        -6.258175,
+        -36.5185555
+    ],
+    "ROUTE_natal - rn_currais novos - br": 181.99,
+    "COORD_empresa brasileira de servicos hospitalares - br": [
+        -15.7955625,
+        -47.8935947
+    ],
+    "ROUTE_natal - rn_empresa brasileira de servicos hospitalares - br": 2494.59,
+    "COORD_lagoa salgada - br": [
+        -6.122954,
+        -35.472394
+    ],
+    "ROUTE_natal - rn_lagoa salgada - br": 55.54,
+    "COORD_secretaria de saude - br": [
+        -19.509213,
+        -42.6377406
+    ],
+    "ROUTE_natal - rn_secretaria de saude - br": 2102.22,
+    "COORD_jose da penha - br": [
+        -20.7933188,
+        -49.3819003
+    ],
+    "ROUTE_natal - rn_jose da penha - br": 2807.59,
+    "COORD_senador rui palmeira - al": [
+        -9.469865,
+        -37.457606
+    ],
+    "ROUTE_natal - rn_senador rui palmeira - al": 644.2,
+    "COORD_junqueiro - al": [
+        -9.9201549,
+        -36.474737
+    ],
+    "ROUTE_natal - rn_junqueiro - al": 617.36,
+    "COORD_lagoa do carro/pe - pe": [
+        -7.843834,
+        -35.310783
+    ],
+    "ROUTE_natal - rn_lagoa do carro/pe - pe": 269.21,
+    "COORD_tenente laurentino - rn": [
+        -6.1567126,
+        -36.7188756
+    ],
+    "ROUTE_natal - rn_tenente laurentino - rn": 222.22,
+    "COORD_jardim do serido - rn": [
+        -6.5844946,
+        -36.7733192
+    ],
+    "ROUTE_natal - rn_jardim do serido - rn": 237.67,
+    "COORD_comando do exercito - br": [
+        -15.777717,
+        -47.91953
+    ],
+    "ROUTE_natal - rn_comando do exercito - br": 2492.51,
+    "COORD_surubim - br": [
+        -7.8982765,
+        -35.9828477
+    ],
+    "ROUTE_natal - rn_surubim - br": 336.16,
+    "COORD_pianco - br": [
+        -7.2231838,
+        -38.290701
+    ],
+    "ROUTE_natal - rn_pianco - br": 460.76,
+    "COORD_saloa - br": [
+        -8.9749823,
+        -36.688037
+    ],
+    "ROUTE_natal - rn_saloa - br": 534.47,
+    "COORD_upanema - br": [
+        -4.9263342,
+        -37.1141201
+    ],
+    "ROUTE_natal - rn_upanema - br": 272.89,
+    "COORD_municipio do cabo de santo agostinho - br": [
+        -8.2864073,
+        -35.0327584
+    ],
+    "ROUTE_natal - rn_municipio do cabo de santo agostinho - br": 312.46,
+    "COORD_ouricuri - br": [
+        -7.8541215,
+        -40.335669
+    ],
+    "ROUTE_natal - rn_ouricuri - br": 780.9,
+    "COORD_universidade federal de alagoas - br": [
+        -9.5536252,
+        -35.7739006
+    ],
+    "ROUTE_natal - rn_universidade federal de alagoas - br": 520.89,
+    "COORD_carnaiba - br": [
+        -7.8021871,
+        -37.7942247
+    ],
+    "ROUTE_natal - rn_carnaiba - br": 457.66,
+    "COORD_ministerio da saude - br": [
+        -22.8952912,
+        -43.2029383
+    ],
+    "ROUTE_natal - rn_ministerio da saude - br": 2586.02,
+    "COORD_secretaria de estado da administracao - br": [
+        -27.5408577,
+        -48.5036331
+    ],
+    "ROUTE_natal - rn_secretaria de estado da administracao - br": 3607.49,
+    "COORD_bayeux - br": [
+        -7.1460302,
+        -34.9489279
+    ],
+    "ROUTE_natal - rn_bayeux - br": 169.95,
+    "COORD_tacaimbo - br": [
+        -8.3173613,
+        -36.2915198
+    ],
+    "ROUTE_natal - rn_tacaimbo - br": 441.2,
+    "COORD_venturosa - br": [
+        -8.5765199,
+        -36.876569
+    ],
+    "ROUTE_natal - rn_venturosa - br": 518.31,
+    "COORD_petrolina - br": [
+        -9.4026734,
+        -40.5548749
+    ],
+    "ROUTE_natal - rn_petrolina - br": 872.03,
+    "COORD_jacuipe - br": [
+        -11.8092457,
+        -39.3808625
+    ],
+    "ROUTE_natal - rn_jacuipe - br": 1099.72,
+    "COORD_avenida miguel castro, 998-a, nossa senhora de nazaré, natal - rn": [
+        -5.8173682,
+        -35.2249489
+    ],
+    "ROUTE_avenida miguel castro, 998-a, nossa senhora de nazaré, natal - rn_municipio do recife - br": 385.36,
+    "ROUTE_avenida miguel castro, 998-a, nossa senhora de nazaré, natal - rn_mata grande - br": 731.94,
+    "ROUTE_avenida miguel castro, 998-a, nossa senhora de nazaré, natal - rn_frutuoso gomes - br": 364.05,
+    "ROUTE_avenida miguel castro, 998-a, nossa senhora de nazaré, natal - rn_universidade estadual da paraiba - br": 369.97,
+    "ROUTE_avenida miguel castro, 998-a, nossa senhora de nazaré, natal - rn_currais novos - br": 176.89,
+    "ROUTE_avenida miguel castro, 998-a, nossa senhora de nazaré, natal - rn_empresa brasileira de servicos hospitalares - br": 2489.5,
+    "ROUTE_avenida miguel castro, 998-a, nossa senhora de nazaré, natal - rn_lagoa salgada - br": 56.26,
+    "ROUTE_avenida miguel castro, 998-a, nossa senhora de nazaré, natal - rn_secretaria de saude - br": 2102.94,
+    "ROUTE_avenida miguel castro, 998-a, nossa senhora de nazaré, natal - rn_jose da penha - br": 2808.31,
+    "ROUTE_avenida miguel castro, 998-a, nossa senhora de nazaré, natal - rn_senador rui palmeira - al": 644.92,
+    "ROUTE_avenida miguel castro, 998-a, nossa senhora de nazaré, natal - rn_lagoa do carro/pe - pe": 269.93,
+    "ROUTE_avenida miguel castro, 998-a, nossa senhora de nazaré, natal - rn_jardim do serido - rn": 232.58,
+    "ROUTE_avenida miguel castro, 998-a, nossa senhora de nazaré, natal - rn_comando do exercito - br": 2487.41,
+    "ROUTE_avenida miguel castro, 998-a, nossa senhora de nazaré, natal - rn_pianco - br": 455.67,
+    "ROUTE_avenida miguel castro, 998-a, nossa senhora de nazaré, natal - rn_saloa - br": 535.19,
+    "ROUTE_avenida miguel castro, 998-a, nossa senhora de nazaré, natal - rn_upanema - br": 270.91,
+    "ROUTE_avenida miguel castro, 998-a, nossa senhora de nazaré, natal - rn_municipio do cabo de santo agostinho - br": 313.18,
+    "ROUTE_avenida miguel castro, 998-a, nossa senhora de nazaré, natal - rn_ouricuri - br": 775.8,
+    "ROUTE_avenida miguel castro, 998-a, nossa senhora de nazaré, natal - rn_universidade federal de alagoas - br": 521.61,
+    "ROUTE_avenida miguel castro, 998-a, nossa senhora de nazaré, natal - rn_ministerio da saude - br": 2586.74,
+    "ROUTE_avenida miguel castro, 998-a, nossa senhora de nazaré, natal - rn_secretaria de estado da administracao - br": 3608.21,
+    "ROUTE_avenida miguel castro, 998-a, nossa senhora de nazaré, natal - rn_tacaimbo - br": 441.92,
+    "ROUTE_avenida miguel castro, 998-a, nossa senhora de nazaré, natal - rn_jacuipe - br": 1094.63,
+    "COORD_comando da marinha - br": [
+        -15.5761248,
+        -56.0584538
+    ],
+    "ROUTE_avenida miguel castro, 998-a, nossa senhora de nazaré, natal - rn_comando da marinha - br": 3620.29,
+    "COORD_instituto nacional do seguro social - br": [
+        -23.5563846,
+        -46.6256378
+    ],
+    "ROUTE_avenida miguel castro, 998-a, nossa senhora de nazaré, natal - rn_instituto nacional do seguro social - br": 2916.74,
+    "COORD_ipueira - br": [
+        -6.8152805,
+        -37.1984637
+    ],
+    "ROUTE_avenida miguel castro, 998-a, nossa senhora de nazaré, natal - rn_ipueira - br": 303.75,
+    "COORD_camalau - br": [
+        -7.885031,
+        -36.824191
+    ],
+    "ROUTE_avenida miguel castro, 998-a, nossa senhora de nazaré, natal - rn_camalau - br": 374.58,
+    "COORD_joao alfredo - br": [
+        -7.8627266,
+        -35.5907721
+    ],
+    "ROUTE_avenida miguel castro, 998-a, nossa senhora de nazaré, natal - rn_joao alfredo - br": 296.08,
+    "COORD_sousa - br": [
+        -6.7792506,
+        -38.2384368
+    ],
+    "ROUTE_avenida miguel castro, 998-a, nossa senhora de nazaré, natal - rn_sousa - br": 415.76,
+    "COORD_universidade estadual de alagoas - br": [
+        -9.4352202,
+        -36.6429179
+    ],
+    "ROUTE_avenida miguel castro, 998-a, nossa senhora de nazaré, natal - rn_universidade estadual de alagoas - br": 584.85,
+    "COORD_empresa brasileira de pesquisa agropecuaria - br": [
+        -25.322251,
+        -49.1580546
+    ],
+    "ROUTE_avenida miguel castro, 998-a, nossa senhora de nazaré, natal - rn_empresa brasileira de pesquisa agropecuaria - br": 3296.66,
+    "COORD_caico - br": [
+        -6.6842017,
+        -36.6560551
+    ],
+    "ROUTE_avenida miguel castro, 998-a, nossa senhora de nazaré, natal - rn_caico - br": 235.8,
+    "COORD_universidade federal de campina grande - br": [
+        -7.214243,
+        -35.9077467
+    ],
+    "ROUTE_avenida miguel castro, 998-a, nossa senhora de nazaré, natal - rn_universidade federal de campina grande - br": 252.23,
+    "COORD_prata - br": [
+        -28.771779,
+        -51.6149405
+    ],
+    "ROUTE_avenida miguel castro, 998-a, nossa senhora de nazaré, natal - rn_prata - br": 3956.01
+}
