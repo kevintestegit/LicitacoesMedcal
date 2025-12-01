@@ -25,6 +25,7 @@ from modules.utils import importer # Import module instead of non-existent class
 from modules.utils.cnae_data import get_keywords_by_cnae
 from modules.ai.ai_config import configure_genai
 from modules.distance_calculator import get_road_distance # Importa calculador de distância
+from modules.core.search_engine import SearchEngine
 
 # Inicializa Banco
 init_db()
@@ -821,96 +822,21 @@ elif page == "Buscar Licitações":
     # Aviso importante sobre não trocar de página
     st.warning("⚠️ **IMPORTANTE:** Durante a busca, **NÃO TROQUE DE PÁGINA** no menu lateral! A busca será interrompida e você perderá o progresso. Aguarde a conclusão antes de navegar.")
 
-    if st.button("🚀 Iniciar Varredura Completa"):
+    if st.button("Iniciar Varredura Completa"):
         # Aviso adicional antes de iniciar
-        st.info("🔄 **Busca em andamento...** Por favor, permaneça nesta página até a conclusão. Isso pode levar alguns minutos.")
+        st.info("**Busca em andamento...** (Motor v2.0 - com IA Semântica)")
 
-        client = PNCPClient()
+        engine = SearchEngine()
+        
+        def streamlit_callback(msg):
+            st.write(msg)
 
-        # Pega termos do catálogo para filtrar a busca inicial
-        session = get_session()
-        prods = session.query(Produto).all()
-        all_keywords = []
-        for p in prods:
-            all_keywords.extend([k.strip().upper() for k in p.palavras_chave.split(',')])
-        all_keywords = list(set(all_keywords)) # Remove duplicatas
-        session.close()
-
-        # Se busca ampla, ignoramos a validação de catálogo vazio
-        if not all_keywords and not busca_ampla:
-            st.warning("Seu catálogo está vazio! Cadastre produtos para gerar palavras-chave de busca.")
-        else:
-            with st.status("🔍 Buscando licitações compatíveis... (Não saia desta página!)", expanded=True) as status:
-                
-                if busca_ampla:
-                    st.write("⚠️ MODO VARREDURA: Buscando todas as licitações (sem filtro de termos)...")
-                    termos_busca = [] # Lista vazia desativa o filtro no client
-                else:
-                    termos_busca = client.TERMOS_POSITIVOS_PADRAO
-                    st.write(f"Filtrando por {len(termos_busca)} termos (Apenas Padrão Medcal)...")
-                
-                # Inicializa lista de resultados
-                resultados_raw = []
-                
-                # Busca PNCP (apenas se selecionado)
-                if use_pncp:
-                    st.write("🏛️ Buscando no PNCP (Portal Nacional)...")
-                    resultados_raw = client.buscar_oportunidades(dias, estados, termos_positivos=termos_busca)
-                else:
-                    st.write("⏭️ PNCP não selecionado, pulando...")
-                
-                # Busca Fontes Extras (se marcadas)
-                if use_femurn:
-                    st.write("Baixando e analisando Diário Oficial do FEMURN (PDF)...")
-                    scraper_femurn = FemurnScraper()
-                    res_femurn = scraper_femurn.buscar_oportunidades(client.TERMOS_POSITIVOS_PADRAO, termos_negativos=client.TERMOS_NEGATIVOS_PADRAO)
-                    resultados_raw.extend(res_femurn)
-
-                if use_famup:
-                    st.write("Baixando e analisando Diário Oficial do FAMUP (PDF)...")
-                    scraper_famup = FamupScraper()
-                    res_famup = scraper_famup.buscar_oportunidades(client.TERMOS_POSITIVOS_PADRAO, termos_negativos=client.TERMOS_NEGATIVOS_PADRAO)
-                    resultados_raw.extend(res_famup)
-
-                if use_amupe:
-                    st.write("Baixando e analisando Diário Oficial do AMUPE (PDF)...")
-                    scraper_amupe = AmupeScraper()
-                    res_amupe = scraper_amupe.buscar_oportunidades(client.TERMOS_POSITIVOS_PADRAO, termos_negativos=client.TERMOS_NEGATIVOS_PADRAO)
-                    resultados_raw.extend(res_amupe)
-
-                # Scrapers de Alagoas
-                if use_ama:
-                    st.write("Baixando e analisando Diário Oficial do AMA (PDF)...")
-                    scraper_ama = AmaScraper()
-                    res_ama = scraper_ama.buscar_oportunidades(client.TERMOS_POSITIVOS_PADRAO, termos_negativos=client.TERMOS_NEGATIVOS_PADRAO)
-                    resultados_raw.extend(res_ama)
-
-                if use_maceio:
-                    st.write("Baixando e analisando Diário Oficial de Maceió (PDF)...")
-                    scraper_maceio = MaceioScraper()
-                    res_maceio = scraper_maceio.buscar_oportunidades(client.TERMOS_POSITIVOS_PADRAO, termos_negativos=client.TERMOS_NEGATIVOS_PADRAO)
-                    resultados_raw.extend(res_maceio)
-
-                if use_maceio_investe:
-                    st.write("Baixando e analisando Diário Oficial de Maceió Investe (PDF)...")
-                    scraper_maceio_investe = MaceioInvesteScraper()
-                    res_maceio_investe = scraper_maceio_investe.buscar_oportunidades(client.TERMOS_POSITIVOS_PADRAO, termos_negativos=client.TERMOS_NEGATIVOS_PADRAO)
-                    resultados_raw.extend(res_maceio_investe)
-
-                if use_maceio_saude:
-                    st.write("Baixando e analisando Diário Oficial de Maceió Saúde (PDF)...")
-                    scraper_maceio_saude = MaceioSaudeScraper()
-                    res_maceio_saude = scraper_maceio_saude.buscar_oportunidades(client.TERMOS_POSITIVOS_PADRAO, termos_negativos=client.TERMOS_NEGATIVOS_PADRAO)
-                    resultados_raw.extend(res_maceio_saude)
-
-                # Processa tudo junto
-                st.write("✅ Processando resultados e salvando no banco...")
-                processar_resultados(resultados_raw)
-
-                # Mensagem de conclusão bem visível
-                status.update(label="✅ Busca concluída com sucesso!", state="complete", expanded=False)
-                st.success("🎉 **Busca finalizada!** Agora você pode navegar livremente entre as páginas.")
-                st.balloons()
+        with st.status("Executando Motor de Busca Inteligente...", expanded=True) as status:
+            # Executa a busca unificada (PNCP + Externos + IA + Async)
+            engine.execute_full_search(dias=60, estados=estados, callback=streamlit_callback)
+            
+            status.update(label="Busca concluída com sucesso!", state="complete", expanded=False)
+            st.success("**Busca finalizada!** Oportunidades salvas e validadas pela IA.")
 
     st.divider()
     
