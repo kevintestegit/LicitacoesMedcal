@@ -5,7 +5,7 @@ import time
 import os
 import unicodedata
 from rapidfuzz import fuzz
-from sqlalchemy import func
+from sqlalchemy import func, or_, not_, and_
 from io import BytesIO
 
 # --- IMPORTS DOS MÓDULOS ---
@@ -1487,19 +1487,24 @@ elif page == "💰 Gestão Financeira":
         # === ANÁLISE SESAP & PÚBLICO ===
         st.write("")
 
-        # Total SESAP = Apenas lançamentos com histórico "632 Ordem Bancária"
+        # Total SESAP = Apenas lançamentos com histórico "632 Ordem Bancária" (Excluindo Base Aérea)
         # (valor total que a SESAP efetivamente pagou)
         total_sesap = session.query(func.sum(ExtratoBB.valor)).filter(
             ExtratoBB.mes_referencia == resumo_selecionado.mes,
             ExtratoBB.ano_referencia == resumo_selecionado.ano,
-            ExtratoBB.historico.ilike('%632 Ordem Bancária%')
+            ExtratoBB.historico.ilike('%632 Ordem Bancária%'),
+            not_(or_(ExtratoBB.historico.ilike('%12 SEC TES NAC%'), ExtratoBB.historico.ilike('%AEREA%')))
         ).scalar() or 0.0
 
-        # Detalhe Base Aérea
+        # Detalhe Base Aérea (Identificado por Tipo OU por palavras-chave no histórico)
         total_base_aerea = session.query(func.sum(ExtratoBB.valor)).filter(
             ExtratoBB.mes_referencia == resumo_selecionado.mes,
             ExtratoBB.ano_referencia == resumo_selecionado.ano,
-            ExtratoBB.tipo == 'Recebimento Base Aérea'
+            or_(
+                ExtratoBB.tipo == 'Recebimento Base Aérea',
+                ExtratoBB.historico.ilike('%12 SEC TES NAC%'),
+                ExtratoBB.historico.ilike('%AEREA%')
+            )
         ).scalar() or 0.0
 
         with st.expander("🏥 Análise de Recebimentos Públicos (SESAP / Base Aérea)", expanded=True):
