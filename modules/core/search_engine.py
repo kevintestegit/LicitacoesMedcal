@@ -122,21 +122,15 @@ class SearchEngine:
         if not contacts_list:
             return False
 
-        # Monta mensagem resumida
-        msg = f"""🚀 *MEDCAL - NOVAS OPORTUNIDADES* ({len(licitacoes_relevantes)})
-
-"""
+        # Monta mensagem resumida (Limpa, sem emojis)
+        msg = f"*MEDCAL - NOVAS OPORTUNIDADES* ({len(licitacoes_relevantes)})\n\n"
+        
         for lic in licitacoes_relevantes[:5]: # Top 5
             matches = ", ".join(lic['matched_products'][:2])
-            msg += f"🏢 *{lic['orgao']}* ({lic['uf']})
-"
-            msg += f"🎯 {matches}
-"
-            msg += f"📅 {lic['dias_restantes']} dias restantes
-"
-            msg += f"🔗 {lic['link']}
-
-"
+            msg += f"*{lic['orgao']}* ({lic['uf']})\n"
+            msg += f"Produtos: {matches}\n"
+            msg += f"Prazo: {lic['dias_restantes']} dias restantes\n"
+            msg += f"Link: {lic['link']}\n\n"
         
         if len(licitacoes_relevantes) > 5:
             msg += f"... e mais {len(licitacoes_relevantes)-5} oportunidades."
