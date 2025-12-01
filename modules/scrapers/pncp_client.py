@@ -75,6 +75,7 @@ class PNCPClient:
         "aquisição de câmeras", "AQUISIÇÃO DE CAMERAS", "AQUISIÇÃO DE CÂMERAS", "equipamentos de segurança", "EQUIPAMENTOS DE SEGURANÇA", "serviços de seguro predial",
         "SERVIÇOS DE SEGURO PREDIAL", "SERVICOS DE SEGURO PREDIAL", "ANIMAIS", "VEÍCULOS", "VEICULOS", "KIT ENXOVAL INFANTIL", "Veículo Automotor", "VEÍCULO AUTOMOTOR", "VEICULO AUTOMOTOR",
         "AGENCIAMENTO DE HOSPEDAGEM", "AGÊNCIA DE HOSPEDAGEM", "AGENCIA DE HOSPEDAGEM", "HOSPEDAGEM", "HOTELARIA", "SERVIÇOS DE HOTELARIA", "SERVICOS DE HOTELARIA", 
+        "DIETA ENTERAL", "DIETA PARENTERAL", "TERAPIA NUTRICIONAL", "DIETA ORAL", "DIETAS",
         "AQUISIÇÃO DE MATERIAL GRÁFICO", "AQUISICAO DE MATERIAL GRAFICO", "MATERIAL GRÁFICO", "MATERIAL GRAFICO", "AQUSIÇÃO DE MÓVEIS E MATERIAIS PERMANENTES",
         "APARELHOS CELULARES", "bomba Injetora de Contraste", "BOMBA INJETORA DE CONTRASTE", "BOMBA INJETORA DE CONTRASTES", "bombas de água e materiais hidráulicos",
         "BOMBAS DE ÁGUA E MATERIAIS HIDRÁULICOS", "BOMBAS DE AGUA E MATERIAIS HIDRAULICOS", "serviços de administração", "SERVIÇOS DE ADMINISTRAÇÃO", "SERVICOS DE ADMINISTRACAO",
@@ -115,6 +116,8 @@ class PNCPClient:
         "GENEROS ALIMENTICIOS", "GÊNEROS ALIMENTÍCIOS", "ALIMENTOS",
         "TECNOLOGIA DA INFORMACAO", "TI", "SOFTWARE", "SOLUCAO DE TECNOLOGIA", "SOLUÇÃO DE TECNOLOGIA",
         "SHOW", "ARTISTICA", "ARTÍSTICA", "EVENTO", "FESTA", "PALCO", "TENDA", "TENDAS", "LOCAÇÃO DE TENDA", "LOCAÇÃO DE TENDAS", "LOCACAO DE TENDA", "LOCACAO DE TENDAS",
+        "EVENTOS", "SONORIZACAO", "SONORIZAÇÃO", "PAINEL DE LED", "PAINEL LED", "PAINEIS DE LED", "PAINÉIS DE LED",
+        "CANCELAMENTO DO PREGAO", "CANCELAMENTO DO PREGÃO", "CANCELAMENTO DO EDITAL", "REVOGACAO", "REVOGAÇÃO",
         "PAVIMENTAÇÃO", "PAVIMENTACAO", "OBRA", "CONSTRUÇÃO", "CONSTRUCAO", "REFORMA",
         "LONA", "LONAS", "LONA PLASTICA", "LONA PLÁSTICA", "BISCOITO", "BISCOITOS", "BOLACHA", "BOLACHAS",
         "PADARIA", "CONFEITARIA", "PANIFICAÇÃO", "PANIFICACAO", "PÃO", "PAO", "PÃES", "PAES",
@@ -284,7 +287,7 @@ class PNCPClient:
     # Bloqueios adicionais para eventos/inscrições genéricas
     TERMOS_EVENTOS_NEGATIVOS = [
         "INSCRICAO", "INSCRIÇÃO", "CONFERENCIA", "CONFERÊNCIA", "CONGRESSO",
-        "SEMINARIO", "SEMINÁRIO", "WORKSHOP", "PALESTRA"
+        "SEMINARIO", "SEMINÁRIO", "WORKSHOP", "PALESTRA", "EVENTOS"
     ]
 
     # Anti-ruido adicional (fora do escopo Medcal)
@@ -317,7 +320,10 @@ class PNCPClient:
         "INSUMOS DE PETREO", "PAVIMENTACAO CAUQ", "CAUQ", "CBUQ", "ASFALTO", "ASFALTICO",
         "LOCACAO DE VIATURA", "LOCAÇÃO DE VIATURA", "VIATURA POLICIAL",
         "AUDITORIA INDEPENDENTE", "AUDITORIA DE FATURAMENTO", "AUDITORIA CONTRATUAL",
-        "RECARGA DE OXIGENIO", "OXIGENIO MEDICINAL", "CESSAO DE CILINDRO", "COMODATO DE CILINDROS"
+        "RECARGA DE OXIGENIO", "OXIGENIO MEDICINAL", "CESSAO DE CILINDRO", "COMODATO DE CILINDROS",
+        "TELECOMUNICACOES", "TELECOMUNICAÇÕES", "REDE DE DADOS", "REDE WIFI", "WI-FI", "WIFI",
+        "MATERIAL PARA EMBALAGEM", "MATERIAIS PARA EMBALAGEM", "CONDICIONAMENTO E EMBALAGEM",
+        "VALVULA", "VALVULAS", "CONEXAO", "CONEXOES", "TRATAMENTO DE AGUA", "SANEAMENTO"
     ]
     TERMOS_NEGATIVOS_PADRAO = TERMOS_NEGATIVOS_PADRAO + TERMOS_NEGATIVOS_EXTRA
 
@@ -568,13 +574,25 @@ class PNCPClient:
         if not (cnpj and ano and seq):
             return []
             
-        url = f"https://pncp.gov.br/api/pncp/v1/orgaos/{cnpj}/compras/{ano}/{seq}/itens"
-        
+        urls_tentativas = [
+            f"https://pncp.gov.br/api/pncp/v1/orgaos/{cnpj}/compras/{ano}/{seq}/itens",
+            f"https://pncp.gov.br/api/consulta/v1/contratacoes/{cnpj}/{ano}/{seq}/itens",  # Fallback público
+        ]
+
         itens_encontrados = []
-        try:
-            resp = requests.get(url, headers=self.headers, timeout=10)
-            if resp.status_code == 200:
-                lista = resp.json()
+        for url in urls_tentativas:
+            try:
+                resp = requests.get(url, headers=self.headers, timeout=10)
+                if resp.status_code != 200:
+                    print(f"[PNCP] Itens HTTP {resp.status_code} em {url}")
+                    continue
+
+                lista = resp.json() or []
+                if not lista:
+                    # tenta próximo endpoint se resposta vazia
+                    print(f"[PNCP] Itens vazios em {url}")
+                    continue
+
                 for i in lista:
                     itens_encontrados.append({
                         "numero": i.get('numeroItem'),
@@ -584,8 +602,9 @@ class PNCPClient:
                         "valor_estimado": i.get('valorTotalEstimado'),
                         "valor_unitario": i.get('valorUnitarioEstimado')
                     })
-        except Exception as e:
-            print(f"Erro ao buscar itens: {e}")
+                break  # já achou itens, não precisa tentar demais
+            except Exception as e:
+                print(f"Erro ao buscar itens em {url}: {e}")
 
         if licitacao_dict is not None:
             licitacao_dict[cache_key] = itens_encontrados

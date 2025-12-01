@@ -77,6 +77,8 @@ class ResumoMensal(Base):
     total_valor = Column(Float, default=0.0)
     total_entradas = Column(Float, default=0.0) # Créditos
     total_saidas = Column(Float, default=0.0) # Débitos (Absoluto)
+    total_aportes = Column(Float, default=0.0) # Aportes de capital
+    total_entradas_sem_aportes = Column(Float, default=0.0) # Entradas sem contar aportes
     total_baixados = Column(Integer, default=0)
     valor_baixados = Column(Float, default=0.0)
     total_pendentes = Column(Integer, default=0)

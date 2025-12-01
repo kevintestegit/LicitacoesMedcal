@@ -25,6 +25,13 @@ class ExtratoBBParser:
         'Mai': 5, 'Jun': 6, 'Jul': 7, 'Ago': 8,
         'Set': 9, 'Out': 10, 'Nov': 11, 'Dez': 12
     }
+
+    # CPFs/CNPJ que representam APORTE DE CAPITAL (não receita operacional)
+    APORTES_DOCS = {
+        '83738657487',    # Magnus Soares
+        '65427238468',    # Paulo Sergio
+        '03319496000159'  # Medcal Farma
+    }
     
     def __init__(self):
         self.erros = []
@@ -121,12 +128,24 @@ class ExtratoBBParser:
                 historico_complementar = hist_comp
         
         tipo_original = self._normalizar_tipo(row.get('Tipo'))
-        tipo_final = 'Movimentacao do Dia' if is_movimentacao_dia else (tipo_original if tipo_original else self._inferir_categoria_pelo_historico(historico))
-        
-        debit_categories = ['Compra com Cartão', 'Impostos', 'Pix - Enviado', 'Pagamento Boleto', 'Pagamento Fornecedor', 'Pagamento Título', 'Pagamento Ourocap', 'Tarifa Bancária', 'Transferência Enviada', 'Cheque', 'Saque']
-        credit_categories = ['Ordem Bancária', 'Recebimento SESAP', 'Recebimento Base Aérea', 'Pix - Recebido', 'Transferência Recebida', 'Crédito Salário', 'Depósito', 'Estorno', 'Depósito Corban', 'Hematologia', 'Coagulacao', 'Coagulação', 'Ionograma', 'Base']
-        neutral_categories = ['Aplicação', 'Aplicação Financeira', 'Resgate', 'Resgate Investimento', 'BB Rende Fácil']
-        
+        tipo_final = 'Movimentacao do Dia' if is_movimentacao_dia else (
+            tipo_original if tipo_original else self._inferir_categoria_pelo_historico(historico)
+        )
+
+        # >>> BLOCO NOVO: detectar APORTE CAPITAL <<<
+        # Junta histórico principal + complementar para procurar CPF/CNPJ
+        texto_busca = f"{historico} {historico_complementar or ''}"
+        is_aporte = any(doc in texto_busca for doc in self.APORTES_DOCS)
+
+        # Se for PIX recebido ou TED/Transferência recebida de CPF/CNPJ de aporte → classifica como Aporte Capital
+        if is_aporte and tipo_final in ['Pix - Recebido', 'Transferência Recebida']:
+            tipo_final = 'Aporte Capital'
+        # >>> FIM BLOCO NOVO <<<
+
+        debit_categories = ['Compra com Cartão', 'Impostos', 'Pix - Enviado', 'Pagamento Boleto', 'Pagamento Fornecedor', 'Pagamento Título', 'Pagamento Ourocap', 'Tarifa Bancária', 'Transferência Enviada', 'Cheque', 'Saque', 'Pagamento Emprestimo Pronampe']
+        credit_categories = ['Ordem Bancária', 'Recebimento SESAP', 'Recebimento Base Aérea', 'Pix - Recebido', 'Transferência Recebida', 'Crédito Salário', 'Depósito', 'Estorno', 'Depósito Corban', 'Hematologia', 'Coagulacao', 'Coagulação', 'Ionograma', 'Base', 'Aporte Capital']
+        neutral_categories = ['Aplicação', 'Aplicação Financeira', 'BB Rende Fácil']
+
         if tipo_final == 'Movimentacao do Dia':
             valor = 0.0
         elif tipo_final in debit_categories: valor = -abs(valor)
@@ -158,8 +177,7 @@ class ExtratoBBParser:
         code = match_code.group(1) if match_code else None
     
         if code:
-            if code == '500': return 'EMPRESTIMO PRONAMPE'
-            # TED-Crédito em Conta (976) é ENTRADA → transferência recebida
+            if code == '500': return 'Pagamento Emprestimo Pronampe'
             if code == '976':
                 return 'Transferência Recebida'
 
@@ -174,7 +192,6 @@ class ExtratoBBParser:
             if code == '860': return 'Pagamento Título'
             if code == '361' or code == '363': return 'Pagamento Boleto'
             if code == '168': return 'Pagamento Ourocap'
-            if code == '303': return 'Resgate Investimento'
             if code == '342': return 'Aplicação Financeira'
             if code == '470': return 'Transferência Enviada'
             if code == '471': return 'Transferência Recebida'
@@ -190,7 +207,6 @@ class ExtratoBBParser:
         if 'BOLETO' in hist_upper or 'TITULO' in hist_upper or 'CONVENIO' in hist_upper: return 'Pagamento Boleto'
         if 'TARIFA' in hist_upper or 'CESTA' in hist_upper or 'DEBITO SERVICO' in hist_upper: return 'Tarifa Bancária'
         if 'APLICACAO' in hist_upper or 'BB RENDE' in hist_upper: return 'Aplicação'
-        if 'RESGATE' in hist_upper: return 'Resgate'
         if 'TED' in hist_upper or 'DOC' in hist_upper or 'TRANSFERENCIA' in hist_upper:
             if 'RECEB' in hist_upper or 'CRED' in hist_upper: return 'Transferência Recebida'
             return 'Transferência Enviada'
@@ -284,22 +300,48 @@ class ExtratoBBParser:
         match = re.search(r'(202\d)', nome)
         if match: return int(match.group(1))
         return datetime.now().year
-    
+
     def _calcular_resumo(self, lancamentos: List[Dict], mes: str, ano: int) -> Dict:
-        tipos_ignorados = ['Aplicação Financeira', 'Resgate Investimento', 'Aplicação', 'Resgate', 'Movimentacao do Dia', 'Emprestimo Pronampe']
+        tipos_ignorados = ['Aplicação Financeira', 'Aplicação', 'Movimentacao do Dia', 'Resgate', 'Resgate Investimento', 'BB Rende Fácil']
+        
         valores_reais_entradas = []
         valores_reais_saidas = []
+        valores_aportes = []
+
         for l in lancamentos:
             tipo = l.get('tipo')
             valor = l['valor']
-            if tipo in tipos_ignorados: continue
-            if valor > 0: valores_reais_entradas.append(valor)
-            elif valor < 0: valores_reais_saidas.append(abs(valor))
-        
+            if tipo in tipos_ignorados:
+                continue
+
+            if valor > 0:
+                valores_reais_entradas.append(valor)
+                # Se for Aporte Capital, guarda separado
+                if tipo and 'aporte' in tipo.lower():
+                    valores_aportes.append(valor)
+            elif valor < 0:
+                valores_reais_saidas.append(abs(valor))
+
+        total_entradas = sum(valores_reais_entradas)
+        total_saidas = sum(valores_reais_saidas)
+        total_aportes = sum(valores_aportes)
+        total_entradas_sem_aportes = total_entradas - total_aportes
+
         total_valor_liquido = sum(l['valor'] for l in lancamentos)
         resumo = {
-            'mes': mes, 'ano': ano, 'total_lancamentos': len(lancamentos), 'total_valor': total_valor_liquido,
-            'total_entradas': sum(valores_reais_entradas), 'total_saidas': sum(valores_reais_saidas),
+            'mes': mes,
+            'ano': ano,
+            'total_lancamentos': len(lancamentos),
+            'total_valor': total_valor_liquido,
+
+            # Entradas totais (incluindo aportes)
+            'total_entradas': total_entradas,
+            'total_saidas': total_saidas,
+
+            # NOVOS CAMPOS:
+            'total_aportes': total_aportes,
+            'total_entradas_sem_aportes': total_entradas_sem_aportes,
+
             'total_baixados': sum(1 for l in lancamentos if l['status'] == 'Baixado'),
             'valor_baixados': sum(l['valor'] for l in lancamentos if l['status'] == 'Baixado'),
             'total_pendentes': sum(1 for l in lancamentos if l['status'] == 'Pendente'),
@@ -309,8 +351,14 @@ class ExtratoBBParser:
             'total_ionograma': sum(l['valor'] for l in lancamentos if l['tipo'] and 'ionograma' in l['tipo'].lower()),
             'total_base': sum(l['valor'] for l in lancamentos if l['tipo'] and 'base' in l['tipo'].lower()),
         }
-        resumo['total_outros'] = resumo['total_valor'] - (resumo['total_hematologia'] + resumo['total_coagulacao'] + resumo['total_ionograma'] + resumo['total_base'])
+        resumo['total_outros'] = resumo['total_valor'] - (
+            resumo['total_hematologia'] +
+            resumo['total_coagulacao'] +
+            resumo['total_ionograma'] +
+            resumo['total_base']
+        )
         return resumo
+
 
     def parse_text(self, text_content: str) -> Dict:
         self.erros = []
@@ -324,6 +372,19 @@ class ExtratoBBParser:
         lancamento_anterior = None
         
         for line in lines:
+            # Pula linhas vazias
+            if not line.strip():
+                continue
+
+            # Pula linha de cabeçalho
+            line_upper = line.upper()
+            if any(header in line_upper for header in ['DT. BALANCETE', 'DT. MOVIMENTO', 'HISTÓRICO', 'VALOR R$']):
+                continue
+
+            # Pula linhas de "Saldo Anterior" (apenas informativo, não é transação real)
+            if 'SALDO ANTERIOR' in line_upper:
+                continue
+
             cols = line.split('\t')
             if len(cols) < 3:
                 if ';' in line: cols = line.split(';')
@@ -334,7 +395,7 @@ class ExtratoBBParser:
                         if lancamento_anterior['historico_complementar']: lancamento_anterior['historico_complementar'] += " " + texto_comp
                         else: lancamento_anterior['historico_complementar'] = texto_comp
                 continue
-            
+
             is_bb_standard = False
             dt_val = self._parse_data(cols[0])
             if dt_val and len(cols) >= 7:
@@ -399,11 +460,11 @@ class ExtratoBBParser:
             hist_lower = historico.lower()
             is_movimentacao_dia = hist_lower.startswith('900') and 'movimenta' in hist_lower and 'dia' in hist_lower
             tipo_inferido = 'Movimentacao do Dia' if is_movimentacao_dia else self._inferir_categoria_pelo_historico(historico)
-            
-            debit_categories = ['Compra com Cartão', 'Impostos', 'Pix - Enviado', 'Pagamento Boleto', 'Pagamento Fornecedor', 'Pagamento Título', 'Tarifa Bancária', 'Transferência Enviada', 'Cheque', 'Saque', 'Aplicação', 'Aplicação Financeira', 'Pagamento Ourocap', 'Emprestimo Pronampe']
-            credit_categories = ['Ordem Bancária', 'Recebimento SESAP', 'Recebimento Base Aérea', 'Pix - Recebido', 'Transferência Recebida', 'Crédito Salário', 'Depósito', 'Estorno', 'Depósito Corban']
-            neutral_categories = ['Aplicação', 'Aplicação Financeira', 'Resgate', 'Resgate Investimento', 'BB Rende Fácil']
-            
+
+            debit_categories = ['Compra com Cartão', 'Impostos', 'Pix - Enviado', 'Pagamento Boleto', 'Pagamento Fornecedor', 'Pagamento Título', 'Tarifa Bancária', 'Transferência Enviada', 'Cheque', 'Saque', 'Aplicação', 'Aplicação Financeira', 'Pagamento Ourocap', 'Pagamento Emprestimo Pronampe']
+            credit_categories = ['Ordem Bancária', 'Recebimento SESAP', 'Recebimento Base Aérea', 'Pix - Recebido', 'Transferência Recebida', 'Crédito Salário', 'Depósito', 'Estorno', 'Depósito Corban', 'Aporte Capital']
+            neutral_categories = ['Aplicação', 'Aplicação Financeira', 'BB Rende Fácil']
+
             if tipo_inferido == 'Movimentacao do Dia':
                 valor = 0.0
             elif tipo_inferido in debit_categories: valor = -abs(valor)
@@ -429,6 +490,17 @@ class ExtratoBBParser:
             lancamentos.append(lancamento)
             lancamento_anterior = lancamento
 
+        # >>> SEGUNDA PASSAGEM: Reclassificar aportes agora que histórico complementar foi coletado <<<
+        for lanc in lancamentos:
+            if lanc['tipo'] in ['Pix - Recebido', 'Transferência Recebida']:
+                texto_completo = f"{lanc['historico']} {lanc.get('historico_complementar', '') or ''}"
+                is_aporte = any(doc in texto_completo for doc in self.APORTES_DOCS)
+                if is_aporte:
+                    lanc['tipo'] = 'Aporte Capital'
+                    # Garante que o valor é positivo (crédito)
+                    lanc['valor'] = abs(lanc['valor'])
+        # >>> FIM SEGUNDA PASSAGEM <<<
+
         resumos = {}
         if lancamentos:
             from collections import Counter
@@ -445,25 +517,17 @@ class ExtratoBBParser:
 
         return {'lancamentos': lancamentos, 'resumos': resumos, 'total_lancamentos': len(lancamentos), 'erros': self.erros, 'avisos': self.avisos}
 
-def salvar_extrato_db(session, resultado: Dict, substituir: bool = False) -> Dict:
+def salvar_extrato_db(session, resultado: Dict) -> Dict:
     from .bank_models import ExtratoBB, ResumoMensal
-    
+
     stats = {'importados': 0, 'duplicados': 0, 'erros': resultado.get('erros', []), 'avisos': resultado.get('avisos', [])}
-    
-    if substituir and resultado['resumos']:
-        for mes, resumo in resultado['resumos'].items():
-            ano = resumo['ano']
-            session.query(ExtratoBB).filter_by(mes_referencia=mes, ano_referencia=ano).delete()
-            session.query(ResumoMensal).filter_by(mes=mes, ano=ano).delete()
-        session.commit()
-    
+
     for lanc in resultado['lancamentos']:
-        if not substituir:
-            existe = session.query(ExtratoBB).filter_by(hash_lancamento=lanc['hash_lancamento']).first()
-            if existe:
-                stats['duplicados'] += 1
-                if not existe.tipo or existe.tipo == 'Outros': existe.tipo = lanc['tipo']
-                continue
+        existe = session.query(ExtratoBB).filter_by(hash_lancamento=lanc['hash_lancamento']).first()
+        if existe:
+            stats['duplicados'] += 1
+            if not existe.tipo or existe.tipo == 'Outros': existe.tipo = lanc['tipo']
+            continue
         extrato = ExtratoBB(**lanc)
         session.add(extrato)
         stats['importados'] += 1
@@ -481,12 +545,12 @@ def salvar_extrato_db(session, resultado: Dict, substituir: bool = False) -> Dic
     session.commit()
     return stats
 
-def importar_extrato_bb(file_path: str, session, ano: int = None, substituir: bool = False) -> Dict:
+def importar_extrato_bb(file_path: str, session, ano: int = None) -> Dict:
     parser = ExtratoBBParser()
     resultado = parser.parse_arquivo(file_path, ano)
-    return salvar_extrato_db(session, resultado, substituir)
+    return salvar_extrato_db(session, resultado)
 
-def processar_texto_extrato(texto: str, session, substituir: bool = False) -> Dict:
+def processar_texto_extrato(texto: str, session) -> Dict:
     parser = ExtratoBBParser()
     resultado = parser.parse_text(texto)
-    return salvar_extrato_db(session, resultado, substituir)
+    return salvar_extrato_db(session, resultado)

@@ -1,0 +1,7 @@
+{
+  "enabled": false,
+  "frequency": "daily",
+  "hour": 2,
+  "keep_last": 30,
+  "last_backup": "2025-11-28T16:36:51.735542"
+}

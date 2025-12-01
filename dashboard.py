@@ -1488,19 +1488,15 @@ elif page == "💰 Gestão Financeira":
                      help="Receitas da operação: SESAP, Base Aérea, Vendas (SEM aportes de capital)")
         with m2:
             st.metric("Aportes de Capital", f"R$ {aportes:,.2f}",
-                     delta="Capital" if aportes > 0 else None,
                      help="Dinheiro dos sócios (Magnus, Paulo, Medcal)")
         with m3:
             st.metric("Saídas (-)", f"R$ {saidas:,.2f}",
-                     delta="-", delta_color="inverse",
                      help="Pagamentos, Impostos, Despesas")
         with m4:
             st.metric("Res. Operacional", f"R$ {resultado_operacional:,.2f}",
-                     delta="Superávit" if resultado_operacional > 0 else "Déficit",
                      help="Entradas Operacionais - Saídas. (Lucro/Prejuízo da operação pura)")
         with m5:
             st.metric("Res. Total c/ Aportes", f"R$ {resultado_com_aportes:,.2f}",
-                     delta="Caixa Final" if resultado_com_aportes > 0 else "Déficit",
                      help="Resultado Final: (Operacional + Aportes) - Saídas")
             
         # === ANÁLISE SESAP & PÚBLICO ===
