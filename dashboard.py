@@ -1465,8 +1465,23 @@ elif page == "💰 Gestão Financeira":
 
         # Resultado Operacional (O que a empresa gerou de caixa real, SEM contar aportes)
         resultado_operacional = entradas_operacionais - saidas
+        resultado_com_aportes = (entradas_operacionais + aportes) - saidas
 
-        m1, m2, m3, m4 = st.columns(4)
+        # CSS para compactar as métricas e garantir que caibam na linha
+        st.markdown("""
+            <style>
+            [data-testid="stMetricLabel"] {
+                font-size: 13px !important;
+                min-height: 30px;
+                white-space: normal;
+            }
+            [data-testid="stMetricValue"] {
+                font-size: 18px !important;
+            }
+            </style>
+        """, unsafe_allow_html=True)
+
+        m1, m2, m3, m4, m5 = st.columns(5)
 
         with m1:
             st.metric("Entradas Operacionais", f"R$ {entradas_operacionais:,.2f}",
@@ -1474,15 +1489,19 @@ elif page == "💰 Gestão Financeira":
         with m2:
             st.metric("Aportes de Capital", f"R$ {aportes:,.2f}",
                      delta="Capital" if aportes > 0 else None,
-                     help="Dinheiro dos sócios (Magnus, Paulo, Medcal) - NÃO é receita operacional")
+                     help="Dinheiro dos sócios (Magnus, Paulo, Medcal)")
         with m3:
             st.metric("Saídas (-)", f"R$ {saidas:,.2f}",
                      delta="-", delta_color="inverse",
                      help="Pagamentos, Impostos, Despesas")
         with m4:
-            st.metric("Resultado Operacional", f"R$ {resultado_operacional:,.2f}",
+            st.metric("Res. Operacional", f"R$ {resultado_operacional:,.2f}",
                      delta="Superávit" if resultado_operacional > 0 else "Déficit",
-                     help="Entradas Operacionais - Saídas (sem contar aportes). Mostra se a operação do mês deu lucro ou prejuízo.")
+                     help="Entradas Operacionais - Saídas. (Lucro/Prejuízo da operação pura)")
+        with m5:
+            st.metric("Res. Total c/ Aportes", f"R$ {resultado_com_aportes:,.2f}",
+                     delta="Caixa Final" if resultado_com_aportes > 0 else "Déficit",
+                     help="Resultado Final: (Operacional + Aportes) - Saídas")
             
         # === ANÁLISE SESAP & PÚBLICO ===
         st.write("")
