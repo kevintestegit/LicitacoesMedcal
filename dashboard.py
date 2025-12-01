@@ -6,6 +6,7 @@ import os
 import unicodedata
 from rapidfuzz import fuzz
 from sqlalchemy import func
+from io import BytesIO
 
 # --- IMPORTS DOS MÓDULOS ---
 from modules.database.database import init_db, get_session, Licitacao, ItemLicitacao, Produto, Configuracao
@@ -652,7 +653,7 @@ if page == "Catálogo":
             "fonte_referencia": st.column_config.TextColumn("Fonte Referência", width="small")
         },
         num_rows="dynamic",
-        use_container_width=True,
+        width='stretch',
         key="editor_catalogo"
     )
     
@@ -696,11 +697,14 @@ elif page == "Buscar Licitações":
             use_femurn = st.checkbox("FEMURN (RN)", value=True, help="Diário Oficial dos Municípios do RN")
         with col_btn:
             if st.button("▶️", key="btn_femurn", help="Rodar apenas FEMURN"):
+                st.info("🔄 Aguarde... Não troque de página durante a busca!")
                 client = PNCPClient()
-                with st.status("Buscando no FEMURN...", expanded=True):
+                with st.status("Buscando no FEMURN...", expanded=True) as status:
                     scraper = FemurnScraper()
                     res = scraper.buscar_oportunidades(client.TERMOS_POSITIVOS_PADRAO, termos_negativos=client.TERMOS_NEGATIVOS_PADRAO)
                     processar_resultados(res)
+                    status.update(label="✅ FEMURN concluído!", state="complete")
+                    st.success("✅ Busca FEMURN finalizada!")
 
     # --- FAMUP (PB) ---
     with col_ext2:
@@ -783,11 +787,17 @@ elif page == "Buscar Licitações":
                     processar_resultados(res)
 
     # Filtro de futuro agora é MANDATÓRIO
-    filtro_futuro = True 
+    filtro_futuro = True
+
+    # Aviso importante sobre não trocar de página
+    st.warning("⚠️ **IMPORTANTE:** Durante a busca, **NÃO TROQUE DE PÁGINA** no menu lateral! A busca será interrompida e você perderá o progresso. Aguarde a conclusão antes de navegar.")
 
     if st.button("🚀 Iniciar Varredura Completa"):
+        # Aviso adicional antes de iniciar
+        st.info("🔄 **Busca em andamento...** Por favor, permaneça nesta página até a conclusão. Isso pode levar alguns minutos.")
+
         client = PNCPClient()
-        
+
         # Pega termos do catálogo para filtrar a busca inicial
         session = get_session()
         prods = session.query(Produto).all()
@@ -796,12 +806,12 @@ elif page == "Buscar Licitações":
             all_keywords.extend([k.strip().upper() for k in p.palavras_chave.split(',')])
         all_keywords = list(set(all_keywords)) # Remove duplicatas
         session.close()
-        
+
         # Se busca ampla, ignoramos a validação de catálogo vazio
         if not all_keywords and not busca_ampla:
             st.warning("Seu catálogo está vazio! Cadastre produtos para gerar palavras-chave de busca.")
         else:
-            with st.status("Buscando licitações compatíveis", expanded=True) as status:
+            with st.status("🔍 Buscando licitações compatíveis... (Não saia desta página!)", expanded=True) as status:
                 
                 if busca_ampla:
                     st.write("⚠️ MODO VARREDURA: Buscando todas as licitações (sem filtro de termos)...")
@@ -865,8 +875,14 @@ elif page == "Buscar Licitações":
                     resultados_raw.extend(res_maceio_saude)
 
                 # Processa tudo junto
+                st.write("✅ Processando resultados e salvando no banco...")
                 processar_resultados(resultados_raw)
-        
+
+                # Mensagem de conclusão bem visível
+                status.update(label="✅ Busca concluída com sucesso!", state="complete", expanded=False)
+                st.success("🎉 **Busca finalizada!** Agora você pode navegar livremente entre as páginas.")
+                st.balloons()
+
     st.divider()
     
     # === BOTÃO MANUAL PARA ENVIAR RELATÓRIO ===
@@ -902,7 +918,7 @@ elif page == "Buscar Licitações":
                 if enviar_relatorio_completo(lics_para_relatorio, session):
                     st.success(f"✅ Relatório com {len(lics_para_relatorio)} licitações enviado!")
                 else:
-                    st.error("❌ Erro ao enviar. Verifique as configurações de WhatsApp.")
+                    st.error("❌ Erro ao enviar. Verifique as configurações de WhatsApp ou veja os logs para mais detalhes.")
             else:
                 st.warning("Nenhuma licitação com prazo aberto encontrada.")
             
@@ -1189,7 +1205,7 @@ elif page == "Dashboard":
                         
                     st.dataframe(
                         pd.DataFrame(data_itens), 
-                        use_container_width=True,
+                        width='stretch',
                         column_config={
                             "Item": st.column_config.NumberColumn(width="small"),
                             "Descrição": st.column_config.TextColumn(width="large"),
@@ -1231,12 +1247,29 @@ elif page == "Dashboard":
 
                 with col_act3:
                     if st.button("📱 Enviar no WhatsApp", key=f"btn_wpp_{lic.id}"):
+                        import json
                         session = get_session()
-                        conf_phone = session.query(Configuracao).filter_by(chave='whatsapp_phone').first()
-                        conf_key = session.query(Configuracao).filter_by(chave='whatsapp_apikey').first()
+
+                        # Tenta buscar configuração nova (múltiplos contatos)
+                        config_contacts = session.query(Configuracao).filter_by(chave='whatsapp_contacts').first()
+
+                        contacts_list = []
+                        if config_contacts and config_contacts.valor:
+                            try:
+                                contacts_list = json.loads(config_contacts.valor)
+                            except:
+                                pass
+
+                        # Fallback: tenta configuração antiga (1 telefone)
+                        if not contacts_list:
+                            conf_phone = session.query(Configuracao).filter_by(chave='whatsapp_phone').first()
+                            conf_key = session.query(Configuracao).filter_by(chave='whatsapp_apikey').first()
+                            if conf_phone and conf_key and conf_phone.valor and conf_key.valor:
+                                contacts_list = [{"nome": "Principal", "phone": conf_phone.valor, "apikey": conf_key.valor}]
+
                         session.close()
 
-                        if not (conf_phone and conf_key and conf_phone.valor and conf_key.valor):
+                        if not contacts_list:
                             st.error("Configure o WhatsApp na aba Configurações!")
                         else:
                             # Monta mensagem
@@ -1244,7 +1277,7 @@ elif page == "Dashboard":
                             # Prioriza itens com match para destacar o motivo do interesse
                             target_list = [i for i in lic.itens if i.produto_match_id]
                             if not target_list: target_list = lic.itens
-                            
+
                             for i in target_list[:5]:
                                 itens_str += f"- {i.descricao[:60]}...\n"
                             if len(target_list) > 5:
@@ -1256,11 +1289,22 @@ elif page == "Dashboard":
                             msg += f"📦 *Destaques:*\n{itens_str}\n"
                             msg += f"🔗 {lic.link}"
 
-                            notifier = WhatsAppNotifier(conf_phone.valor, conf_key.valor)
-                            if notifier.enviar_mensagem(msg):
-                                st.toast("Enviado com sucesso!", icon="✅")
-                            else:
-                                st.error("Erro ao enviar mensagem.")
+                            # Envia para todos os contatos configurados
+                            enviados = 0
+                            erros = []
+                            for contact in contacts_list:
+                                notifier = WhatsAppNotifier(contact.get('phone'), contact.get('apikey'))
+                                if notifier.enviar_mensagem(msg):
+                                    enviados += 1
+                                else:
+                                    erro_msg = notifier.ultimo_erro or "Erro desconhecido"
+                                    erros.append(f"{contact.get('nome', 'Sem nome')}: {erro_msg}")
+
+                            if enviados > 0:
+                                st.toast(f"✅ Enviado para {enviados} contato(s)!", icon="✅")
+
+                            if erros:
+                                st.error("❌ Erros ao enviar:\n" + "\n".join(erros))
 
 elif page == "💰 Gestão Financeira":
     st.header("💰 Gestão Financeira - Extratos Banco do Brasil")
@@ -1274,8 +1318,7 @@ elif page == "💰 Gestão Financeira":
     with col_up1:
         with st.expander("📤 Importar Arquivo Excel", expanded=False):
             uploaded_file = st.file_uploader("Selecione o arquivo Excel (.xlsx)", type=['xlsx'])
-            substituir_arquivo = st.checkbox("🔄 Substituir dados deste mês (Correção)", value=True, help="Marque para apagar os dados antigos desse mês e importar tudo de novo limpo.")
-            
+
             if uploaded_file:
                 if st.button("Processar Arquivo"):
                     with st.spinner("Lendo arquivo..."):
@@ -1283,9 +1326,9 @@ elif page == "💰 Gestão Financeira":
                         temp_path = f"temp_extrato_{int(time.time())}.xlsx"
                         with open(temp_path, "wb") as f:
                             f.write(uploaded_file.getbuffer())
-                        
+
                         try:
-                            stats = importar_extrato_bb(temp_path, session, substituir=substituir_arquivo)
+                            stats = importar_extrato_bb(temp_path, session)
                             st.success(f"✅ Importação concluída! {stats['importados']} lançamentos processados.")
                             if stats['duplicados'] > 0:
                                 st.warning(f"{stats['duplicados']} lançamentos duplicados mantidos/ignorados.")
@@ -1324,13 +1367,12 @@ elif page == "💰 Gestão Financeira":
         with st.expander(lbl_expander, expanded=False):
             st.info(msg_ajuda)
             texto_paste = st.text_area("Cole os dados aqui:", height=150, placeholder="25/11/2025\tPIX RECEBIDO\t2.000,00 C")
-            substituir_texto = st.checkbox("🔄 Substituir dados do mês", value=True, key="chk_subst_text")
-            
+
             if st.button("Processar Texto"):
                 if texto_paste:
                     with st.spinner("Processando texto..."):
                         try:
-                            stats = processar_texto_extrato(texto_paste, session, substituir=substituir_texto)
+                            stats = processar_texto_extrato(texto_paste, session)
                             st.success(f"✅ Importação concluída! {stats['importados']} lançamentos processados.")
                             if stats['duplicados'] > 0:
                                 st.warning(f"{stats['duplicados']} lançamentos duplicados mantidos/ignorados.")
@@ -1365,21 +1407,24 @@ elif page == "💰 Gestão Financeira":
     st.divider()
 
     # === DASHBOARD E VISUALIZAÇÃO ===
-    
-    # Filtros
-    col_filtro1, col_filtro2 = st.columns(2)
-    
+
     # Busca meses disponíveis
     meses_disponiveis = session.query(ResumoMensal).order_by(ResumoMensal.ano.desc(), ResumoMensal.id.desc()).all()
-    
+
     if meses_disponiveis:
         opcoes_meses = [f"{m.mes}/{m.ano}" for m in meses_disponiveis]
-        with col_filtro1:
-            mes_selecionado_str = st.selectbox("Selecione o Mês", opcoes_meses)
-            
-        # Pega o objeto ResumoMensal selecionado
-        resumo_selecionado = next(m for m in meses_disponiveis if f"{m.mes}/{m.ano}" == mes_selecionado_str)
-        
+
+        # Seletor de mês (colocado aqui para controlar todas as visualizações)
+        st.subheader("📝 Gerenciar Lançamentos")
+        col_sel_mes, col_info = st.columns([1, 3])
+        with col_sel_mes:
+            mes_selecionado_str = st.selectbox("📅 Mês", opcoes_meses, key="selector_mes_lancamentos")
+            resumo_selecionado = next(m for m in meses_disponiveis if f"{m.mes}/{m.ano}" == mes_selecionado_str)
+        with col_info:
+            st.info("Selecione o mês para visualizar métricas, gráficos e gerenciar lançamentos.")
+
+        st.divider()
+
         # === METRICAS DO MÊS ===
         col_titulo, col_recalc = st.columns([4, 1])
         with col_titulo:
@@ -1388,7 +1433,7 @@ elif page == "💰 Gestão Financeira":
             st.write("")  # Alinhamento vertical
             if st.button("🔄 Recalcular", help="Recalcula os totais de entradas e saídas baseado nos lançamentos atuais"):
                 # Recalcula o resumo
-                tipos_ignorados = ['Aplicação Financeira', 'Resgate Investimento', 'Aplicação', 'Resgate', 'BB Rende Fácil', 'Movimentacao do Dia']
+                tipos_ignorados = ['Aplicação Financeira', 'Aplicação', 'BB Rende Fácil', 'Movimentacao do Dia']
                 lancamentos_mes = session.query(ExtratoBB).filter_by(
                     mes_referencia=resumo_selecionado.mes,
                     ano_referencia=resumo_selecionado.ano
@@ -1398,7 +1443,13 @@ elif page == "💰 Gestão Financeira":
                 total_saidas = sum(abs(l.valor) for l in lancamentos_mes if l.valor < 0 and l.tipo not in tipos_ignorados)
                 total_valor_liquido = sum(l.valor for l in lancamentos_mes)
 
+                # Separa aportes de entradas operacionais
+                total_aportes = sum(l.valor for l in lancamentos_mes if l.valor > 0 and l.tipo == 'Aporte Capital')
+                total_entradas_sem_aportes = total_entradas - total_aportes
+
                 resumo_selecionado.total_entradas = total_entradas
+                resumo_selecionado.total_aportes = total_aportes
+                resumo_selecionado.total_entradas_sem_aportes = total_entradas_sem_aportes
                 resumo_selecionado.total_saidas = total_saidas
                 resumo_selecionado.total_valor = total_valor_liquido
                 session.add(resumo_selecionado)
@@ -1408,35 +1459,30 @@ elif page == "💰 Gestão Financeira":
                 st.rerun()
 
         # Cálculo dos indicadores financeiros
-        entradas = getattr(resumo_selecionado, 'total_entradas', 0.0)
+        entradas_operacionais = getattr(resumo_selecionado, 'total_entradas_sem_aportes', 0.0)
+        aportes = getattr(resumo_selecionado, 'total_aportes', 0.0)
         saidas = getattr(resumo_selecionado, 'total_saidas', 0.0)
-        saldo_final = resumo_selecionado.total_valor
-        
-        # Resultado Operacional (O que a empresa gerou de caixa real)
-        resultado_operacional = entradas - saidas
-        
-        # Movimento de Investimento (A diferença para chegar no saldo final vem daqui)
-        # Se Resultado Operacional foi -100 e Saldo Final foi +10, então +110 veio de Resgate.
-        movimento_investimento = saldo_final - resultado_operacional
-        
-        m1, m2, m3, m4, m5 = st.columns(5)
-        
+
+        # Resultado Operacional (O que a empresa gerou de caixa real, SEM contar aportes)
+        resultado_operacional = entradas_operacionais - saidas
+
+        m1, m2, m3, m4 = st.columns(4)
+
         with m1:
-            st.metric("Entradas (+)", f"R$ {entradas:,.2f}", help="Vendas, Pix Recebidos, Ordens Bancárias (Ignora Resgates)")
+            st.metric("Entradas Operacionais", f"R$ {entradas_operacionais:,.2f}",
+                     help="Receitas da operação: SESAP, Base Aérea, Vendas (SEM aportes de capital)")
         with m2:
-            st.metric("Saídas (-)", f"R$ {saidas:,.2f}", delta="-", delta_color="inverse", help="Pagamentos, Impostos, Despesas (Ignora Aplicações)")
+            st.metric("Aportes de Capital", f"R$ {aportes:,.2f}",
+                     delta="Capital" if aportes > 0 else None,
+                     help="Dinheiro dos sócios (Magnus, Paulo, Medcal) - NÃO é receita operacional")
         with m3:
-            st.metric("Resultado Operacional", f"R$ {resultado_operacional:,.2f}", 
-                     delta="Superávit" if resultado_operacional > 0 else "Déficit",
-                     help="Entradas - Saídas. Mostra se a operação do mês deu lucro ou prejuízo de caixa.")
+            st.metric("Saídas (-)", f"R$ {saidas:,.2f}",
+                     delta="-", delta_color="inverse",
+                     help="Pagamentos, Impostos, Despesas")
         with m4:
-            label_inv = "Resgate Invest. (+)" if movimento_investimento > 0 else "Aplicação Aut. (-)"
-            st.metric(label_inv, f"R$ {abs(movimento_investimento):,.2f}", 
-                     help="Movimentação do BB Rende Fácil/Investimentos para cobrir o saldo.")
-        with m5:
-            st.metric("Saldo Final (Banco)", f"R$ {saldo_final:,.2f}", 
-                     delta="Aumentou" if saldo_final > 0 else "Diminuiu",
-                     help="Variação real do saldo na conta corrente (extrato final).")
+            st.metric("Resultado Operacional", f"R$ {resultado_operacional:,.2f}",
+                     delta="Superávit" if resultado_operacional > 0 else "Déficit",
+                     help="Entradas Operacionais - Saídas (sem contar aportes). Mostra se a operação do mês deu lucro ou prejuízo.")
             
         # === ANÁLISE SESAP & PÚBLICO ===
         st.write("")
@@ -1491,9 +1537,9 @@ elif page == "💰 Gestão Financeira":
         # === GRÁFICOS DE COMPOSIÇÃO ===
         st.write("") # Espaçamento
         col_comp1, col_comp2 = st.columns(2)
-        
+
         # Tipos neutros para ignorar
-        tipos_neutros = ['Aplicação', 'Aplicação Financeira', 'Resgate', 'Resgate Investimento', 'BB Rende Fácil']
+        tipos_neutros = ['Aplicação', 'Aplicação Financeira', 'BB Rende Fácil']
 
         # --- Entradas ---
         with col_comp1:
@@ -1567,11 +1613,11 @@ elif page == "💰 Gestão Financeira":
                     st.info("Sem dados de saída.")
         
         st.divider()
-        
-        # === TABELA EDITÁVEL DE LANÇAMENTOS ===
-        st.subheader("📝 Gerenciar Lançamentos")
-        st.info("Você pode alterar o **Tipo** e a **Fatura** diretamente na tabela abaixo. Útil para classificar 'Ordem Bancária' como 'Hematologia', Ionograma, etc.")
-        
+
+        # === TABELA DE LANÇAMENTOS ===
+        st.markdown("#### 📋 Lançamentos do Mês")
+        st.caption("Você pode alterar o **Tipo** e a **Fatura** diretamente na tabela abaixo. Útil para classificar 'Ordem Bancária' como 'Hematologia', Ionograma, etc.")
+
         # Filtros da tabela
         tf1, tf2, tf3 = st.columns([1, 1, 2])
         with tf1:
@@ -1622,7 +1668,68 @@ elif page == "💰 Gestão Financeira":
             
             df_edit = pd.DataFrame(data_edit)
             df_edit.set_index("id", inplace=True) # Define ID como índice para ocultar
-            
+
+            # Botões de download da planilha
+            col_down1, col_down2, col_down3 = st.columns([1, 1, 4])
+
+            with col_down1:
+                # Prepara dados do mês atual para download
+                df_download_mes = df_edit.copy()
+                df_download_mes['Status'] = df_download_mes['Status'].str.replace("🟢 ", "").str.replace("🟡 ", "").str.replace("⚪ ", "")
+
+                # Converte para Excel em memória
+                buffer_mes = BytesIO()
+                with pd.ExcelWriter(buffer_mes, engine='openpyxl') as writer:
+                    df_download_mes.to_excel(writer, sheet_name=f'{resumo_selecionado.mes}_{resumo_selecionado.ano}', index=False)
+                buffer_mes.seek(0)
+
+                st.download_button(
+                    label="📥 Baixar Mês",
+                    data=buffer_mes,
+                    file_name=f"lancamentos_{resumo_selecionado.mes}_{resumo_selecionado.ano}.xlsx",
+                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                    help="Baixa os lançamentos do mês atual filtrados"
+                )
+
+            with col_down2:
+                # Prepara dados de TODOS os meses para download
+                todos_lancamentos = session.query(ExtratoBB).order_by(
+                    ExtratoBB.ano_referencia.desc(),
+                    ExtratoBB.mes_referencia.desc(),
+                    ExtratoBB.dt_balancete.desc()
+                ).all()
+
+                data_todos = []
+                for l in todos_lancamentos:
+                    st_fmt = "Baixado" if str(l.status).lower() == 'baixado' else "Pendente" if str(l.status).lower() == 'pendente' else ""
+                    data_todos.append({
+                        "Mês": l.mes_referencia,
+                        "Ano": l.ano_referencia,
+                        "Data": l.dt_balancete,
+                        "Status": st_fmt,
+                        "Histórico": l.historico,
+                        "Documento": l.documento,
+                        "Valor": l.valor,
+                        "Tipo": l.tipo,
+                        "Fatura": l.fatura
+                    })
+
+                df_todos = pd.DataFrame(data_todos)
+
+                # Converte para Excel em memória
+                buffer_todos = BytesIO()
+                with pd.ExcelWriter(buffer_todos, engine='openpyxl') as writer:
+                    df_todos.to_excel(writer, sheet_name='Todos_Lançamentos', index=False)
+                buffer_todos.seek(0)
+
+                st.download_button(
+                    label="📥 Baixar Todos",
+                    data=buffer_todos,
+                    file_name="lancamentos_todos_meses.xlsx",
+                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                    help="Baixa TODOS os lançamentos de todos os meses"
+                )
+
             # Configura editor
             edited_df = st.data_editor(
                 df_edit,
@@ -1640,17 +1747,17 @@ elif page == "💰 Gestão Financeira":
                         "Classificação",
                         options=[
                             "Ordem Bancária", "Hematologia", "Coagulação", "Ionograma", "Base",
-                            "Pix - Recebido", "Pix - Enviado", "Pagamento Boleto", 
+                            "Pix - Recebido", "Pix - Enviado", "Pagamento Boleto",
                             "Pagamento Fornecedor", "Impostos", "Tarifa Bancária",
-                            "Transferência Recebida", "Transferência Enviada", 
-                            "Aplicação", "Resgate", "Pagamento Ourocap", "Depósito Corban", "Outros"
+                            "Transferência Recebida", "Transferência Enviada",
+                            "Aplicação", "Pagamento Ourocap", "Depósito Corban", "Outros"
                         ],
                         required=True
                     ),
                     "Fatura": st.column_config.TextColumn("Fatura / Obs")
                 },
                 hide_index=True, # Oculta o ID (que agora é o índice)
-                use_container_width=True,
+                width='stretch',
                 key="editor_lancamentos"
             )
             
@@ -1699,7 +1806,7 @@ elif page == "💰 Gestão Financeira":
                         session.commit()
 
                         # RECALCULA o ResumoMensal para atualizar os totais de entradas/saídas
-                        tipos_ignorados = ['Aplicação Financeira', 'Resgate Investimento', 'Aplicação', 'Resgate', 'BB Rende Fácil']
+                        tipos_ignorados = ['Aplicação Financeira', 'Aplicação', 'BB Rende Fácil']
 
                         # Busca todos os lançamentos do mês
                         lancamentos_mes = session.query(ExtratoBB).filter_by(
@@ -1710,22 +1817,30 @@ elif page == "💰 Gestão Financeira":
                         # Recalcula entradas e saídas
                         total_entradas = 0.0
                         total_saidas = 0.0
+                        total_aportes = 0.0
                         total_valor_liquido = 0.0
 
                         for lanc in lancamentos_mes:
                             total_valor_liquido += lanc.valor
 
-                            # Ignora aplicações/resgates
+                            # Ignora aplicações
                             if lanc.tipo in tipos_ignorados:
                                 continue
 
                             if lanc.valor > 0:
                                 total_entradas += lanc.valor
+                                # Separa aportes
+                                if lanc.tipo == 'Aporte Capital':
+                                    total_aportes += lanc.valor
                             elif lanc.valor < 0:
                                 total_saidas += abs(lanc.valor)
 
+                        total_entradas_sem_aportes = total_entradas - total_aportes
+
                         # Atualiza o resumo mensal
                         resumo_selecionado.total_entradas = total_entradas
+                        resumo_selecionado.total_aportes = total_aportes
+                        resumo_selecionado.total_entradas_sem_aportes = total_entradas_sem_aportes
                         resumo_selecionado.total_saidas = total_saidas
                         resumo_selecionado.total_valor = total_valor_liquido
                         session.add(resumo_selecionado)
@@ -1744,7 +1859,132 @@ elif page == "💰 Gestão Financeira":
         st.info("Nenhum extrato importado ainda. Use a opção acima para importar um arquivo Excel do BB.")
 
     st.divider()
-    
+
+    # === BACKUP AUTOMÁTICO ===
+    with st.expander("💾 Gerenciamento de Backups", expanded=False):
+        from modules.finance.backup_manager import BackupManager
+
+        backup_manager = BackupManager()
+
+        # Abas
+        tab_manual, tab_automatico, tab_restaurar = st.tabs(["📥 Backup Manual", "⚙️ Automático", "♻️ Restaurar"])
+
+        with tab_manual:
+            st.markdown("### Criar Backup Manual")
+            col_bk1, col_bk2 = st.columns([3, 1])
+
+            with col_bk1:
+                descricao_backup = st.text_input("Descrição do backup", placeholder="Ex: Antes de importar novos dados")
+
+            with col_bk2:
+                st.write("")  # Alinhamento
+                if st.button("💾 Criar Backup", type="primary"):
+                    with st.spinner("Criando backup..."):
+                        resultado = backup_manager.criar_backup(descricao=descricao_backup or "Backup manual")
+
+                        if resultado["sucesso"]:
+                            st.success(f"✅ Backup criado com sucesso!")
+                            st.info(f"📁 Arquivo: {resultado['metadata']['arquivo']}")
+                            st.caption(f"📊 Tamanho: {resultado['metadata']['tamanho_mb']} MB")
+                        else:
+                            st.error(f"❌ Erro ao criar backup: {resultado['erro']}")
+
+            # Estatísticas
+            st.markdown("### 📊 Estatísticas")
+            stats = backup_manager.get_estatisticas()
+
+            col_st1, col_st2, col_st3 = st.columns(3)
+            with col_st1:
+                st.metric("Total de Backups", stats["total_backups"])
+            with col_st2:
+                st.metric("Espaço Usado", f"{stats['tamanho_total_mb']} MB")
+            with col_st3:
+                if stats["ultimo_backup"]:
+                    ultimo = datetime.fromisoformat(stats["ultimo_backup"]["datetime"])
+                    st.metric("Último Backup", ultimo.strftime("%d/%m/%Y %H:%M"))
+                else:
+                    st.metric("Último Backup", "Nenhum")
+
+        with tab_automatico:
+            st.markdown("### ⚙️ Configurar Backup Automático")
+
+            config_atual = backup_manager.config
+
+            col_cfg1, col_cfg2 = st.columns(2)
+
+            with col_cfg1:
+                auto_enabled = st.checkbox("Ativar backup automático", value=config_atual.get("enabled", False))
+                frequencia = st.selectbox("Frequência", ["daily", "weekly"],
+                                        index=0 if config_atual.get("frequency") == "daily" else 1)
+                frequencia_label = "Diário" if frequencia == "daily" else "Semanal (domingo)"
+
+            with col_cfg2:
+                hora = st.number_input("Hora do dia (0-23)", min_value=0, max_value=23,
+                                      value=config_atual.get("hour", 2))
+                keep_last = st.number_input("Manter últimos N backups", min_value=5, max_value=100,
+                                           value=config_atual.get("keep_last", 30))
+
+            if st.button("💾 Salvar Configuração"):
+                backup_manager.configurar_backup_automatico(
+                    enabled=auto_enabled,
+                    frequency=frequencia,
+                    hour=hora,
+                    keep_last=keep_last
+                )
+                st.success(f"✅ Configuração salva! Backup {frequencia_label.lower()} às {hora}:00h")
+
+                if auto_enabled:
+                    backup_manager.iniciar_backup_automatico()
+                    st.info("🚀 Serviço de backup automático iniciado!")
+
+            st.divider()
+            st.info(f"""
+            **Configuração atual:**
+            - Status: {'✅ Ativo' if config_atual.get('enabled') else '❌ Desativado'}
+            - Frequência: {frequencia_label}
+            - Horário: {config_atual.get('hour', 2)}:00h
+            - Manter: {config_atual.get('keep_last', 30)} backups
+            """)
+
+        with tab_restaurar:
+            st.markdown("### ♻️ Restaurar Backup")
+
+            backups = backup_manager.listar_backups()
+
+            if not backups:
+                st.info("Nenhum backup disponível ainda. Crie um backup primeiro!")
+            else:
+                st.warning("⚠️ Restaurar um backup substituirá todos os dados atuais!")
+
+                # Lista de backups
+                for backup in backups:
+                    with st.container():
+                        col_b1, col_b2, col_b3, col_b4 = st.columns([2, 2, 1, 1])
+
+                        backup_dt = datetime.fromisoformat(backup["datetime"])
+
+                        with col_b1:
+                            st.write(f"📅 **{backup_dt.strftime('%d/%m/%Y %H:%M')}**")
+                        with col_b2:
+                            st.caption(backup.get("descricao", ""))
+                        with col_b3:
+                            st.caption(f"{backup['tamanho_mb']} MB")
+                        with col_b4:
+                            if st.button("♻️ Restaurar", key=f"restore_{backup['timestamp']}"):
+                                with st.spinner("Restaurando backup..."):
+                                    resultado = backup_manager.restaurar_backup(backup["timestamp"])
+
+                                    if resultado["sucesso"]:
+                                        st.success("✅ Backup restaurado com sucesso!")
+                                        time.sleep(2)
+                                        st.rerun()
+                                    else:
+                                        st.error(f"❌ Erro: {resultado['erro']}")
+
+                        st.divider()
+
+    st.divider()
+
     # === ZONA DE PERIGO ===
     with st.expander("🗑️ Zona de Perigo - Limpeza de Dados"):
         st.warning("Cuidado: As ações abaixo são irreversíveis.")
@@ -1851,7 +2091,8 @@ elif page == "Configurações":
                     if notifier.enviar_mensagem("🔔 Teste de notificação Medcal realizado com sucesso!"):
                         st.toast(f"Mensagem enviada para {contact.get('nome')}!", icon="✅")
                     else:
-                        st.error(f"Erro ao enviar para {contact.get('nome')}. Verifique os dados.")
+                        erro_msg = notifier.ultimo_erro or "Erro desconhecido"
+                        st.error(f"Erro ao enviar para {contact.get('nome')}: {erro_msg}")
 
                 if c4.button("🗑️", key=f"del_wpp_{idx}", help="Excluir este contato"):
                     contacts_list.pop(idx)
