@@ -1,3 +1,4 @@
+import concurrent.futures
 import streamlit as st
 import pandas as pd
 from datetime import datetime, date
@@ -528,72 +529,100 @@ def processar_resultados(resultados_raw):
     st.write(f"- Ignorados pelo Filtro de Data (Passado): {ignorados_data}")
     st.write(f"- Restantes para Importação: {len(resultados)}")
     
-    # Salvar no Banco
-    novos = 0
+    # --- OTIMIZAÇÃO DE PERFORMANCE (ASYNC) ---
+    candidatos_novos = []
     ignorados_duplicados = 0
-    high_priority_alerts = []
-    alert_threshold = 15
-    
+
+    # 1. Identifica APENAS o que é novo no banco
     for res in resultados:
         exists = session.query(Licitacao).filter_by(pncp_id=res['pncp_id']).first()
         if not exists:
-            lic = Licitacao(
-                pncp_id=res['pncp_id'],
-                orgao=res['orgao'],
-                uf=res['uf'],
-                modalidade=res['modalidade'],
-                data_sessao=safe_parse_date(res.get('data_sessao')),
-                data_publicacao=safe_parse_date(res.get('data_publicacao')),
-                data_inicio_proposta=safe_parse_date(res.get('data_inicio_proposta')),
-                data_encerramento_proposta=safe_parse_date(res.get('data_encerramento_proposta')),
-                objeto=res['objeto'],
-                link=res['link']
-            )
-            session.add(lic)
-            session.flush()
-
-            # Buscar itens e FILTRAR termos negativos
-            itens_api = client.buscar_itens(res)
-            itens_filtrados = filtrar_itens_negativos(itens_api, client.TERMOS_NEGATIVOS_PADRAO)
-            
-            for i in itens_filtrados:
-                item_db = ItemLicitacao(
-                    licitacao_id=lic.id,
-                    numero_item=i['numero'],
-                    descricao=i['descricao'],
-                    quantidade=i['quantidade'],
-                    unidade=i['unidade'],
-                    valor_estimado=i['valor_estimado'],
-                    valor_unitario=i['valor_unitario']
-                )
-                session.add(item_db)
-            
-            # Faz match dos itens e coleta os produtos que deram match
-            match_itens(session, lic.id)
-            
-            # Busca os produtos que REALMENTE deram match nos ITENS (não no objeto)
-            matched_products_real = []
-            for item in session.query(ItemLicitacao).filter_by(licitacao_id=lic.id).all():
-                if item.produto_match_id and item.produto_match:
-                    matched_products_real.append(item.produto_match.nome)
-            matched_products_real = list(set(matched_products_real))  # Remove duplicatas
-            
-            novos += 1
-
-            # Só adiciona ao alerta se tiver match REAL nos itens OU score alto
-            if matched_products_real or res.get('match_score', 0) >= alert_threshold:
-                high_priority_alerts.append({
-                    "orgao": res.get('orgao'),
-                    "uf": res.get('uf'),
-                    "modalidade": res.get('modalidade'),
-                    "match_score": res.get('match_score'),
-                    "matched_products": matched_products_real,  # Agora vem dos ITENS!
-                    "dias_restantes": res.get('dias_restantes'),
-                    "data_encerramento_proposta": res.get('data_encerramento_proposta'),
-                    "link": res.get('link')
-                })
+            candidatos_novos.append(res)
         else:
             ignorados_duplicados += 1
+            
+    # 2. Busca itens em PARALELO (ThreadPool) apenas para os novos
+    if candidatos_novos:
+        st.info(f"🚀 Acelerando: Buscando itens de {len(candidatos_novos)} licitações simultaneamente...")
+        with concurrent.futures.ThreadPoolExecutor(max_workers=20) as executor:
+            # Mapeia future -> licitação
+            future_to_res = {executor.submit(client.buscar_itens, res): res for res in candidatos_novos}
+            
+            for future in concurrent.futures.as_completed(future_to_res):
+                res = future_to_res[future]
+                try:
+                    # Salva itens pré-carregados no dicionário
+                    res['_itens_preloaded'] = future.result()
+                except Exception as e:
+                    print(f"Erro ao buscar itens async: {e}")
+                    res['_itens_preloaded'] = []
+    
+    # Salvar no Banco (Sequencial, mas já com dados carregados)
+    novos = 0
+    high_priority_alerts = []
+    alert_threshold = 15
+    
+    for res in candidatos_novos:
+        lic = Licitacao(
+            pncp_id=res['pncp_id'],
+            orgao=res['orgao'],
+            uf=res['uf'],
+            modalidade=res['modalidade'],
+            data_sessao=safe_parse_date(res.get('data_sessao')),
+            data_publicacao=safe_parse_date(res.get('data_publicacao')),
+            data_inicio_proposta=safe_parse_date(res.get('data_inicio_proposta')),
+            data_encerramento_proposta=safe_parse_date(res.get('data_encerramento_proposta')),
+            objeto=res['objeto'],
+            link=res['link']
+        )
+        session.add(lic)
+        session.flush()
+
+        # Usa itens pré-carregados
+        itens_api = res.get('_itens_preloaded', [])
+        # Fallback caso algo tenha falhado na thread
+        if not itens_api and '_itens_preloaded' not in res:
+             itens_api = client.buscar_itens(res)
+
+        # Filtra termos negativos
+        itens_filtrados = filtrar_itens_negativos(itens_api, client.TERMOS_NEGATIVOS_PADRAO)
+        
+        for i in itens_filtrados:
+            item_db = ItemLicitacao(
+                licitacao_id=lic.id,
+                numero_item=i['numero'],
+                descricao=i['descricao'],
+                quantidade=i['quantidade'],
+                unidade=i['unidade'],
+                valor_estimado=i['valor_estimado'],
+                valor_unitario=i['valor_unitario']
+            )
+            session.add(item_db)
+        
+        # Faz match dos itens e coleta os produtos que deram match
+        match_itens(session, lic.id)
+        
+        # Busca os produtos que REALMENTE deram match nos ITENS (não no objeto)
+        matched_products_real = []
+        for item in session.query(ItemLicitacao).filter_by(licitacao_id=lic.id).all():
+            if item.produto_match_id and item.produto_match:
+                matched_products_real.append(item.produto_match.nome)
+        matched_products_real = list(set(matched_products_real))  # Remove duplicatas
+        
+        novos += 1
+
+        # Só adiciona ao alerta se tiver match REAL nos itens OU score alto
+        if matched_products_real or res.get('match_score', 0) >= alert_threshold:
+            high_priority_alerts.append({
+                "orgao": res.get('orgao'),
+                "uf": res.get('uf'),
+                "modalidade": res.get('modalidade'),
+                "match_score": res.get('match_score'),
+                "matched_products": matched_products_real,  # Agora vem dos ITENS!
+                "dias_restantes": res.get('dias_restantes'),
+                "data_encerramento_proposta": res.get('data_encerramento_proposta'),
+                "link": res.get('link')
+            })
     
     session.commit()
     st.success(f"Busca finalizada! {novos} novas licitações importadas.")
