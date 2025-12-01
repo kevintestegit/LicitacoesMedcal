@@ -1421,7 +1421,7 @@ elif page == "💰 Gestão Financeira":
             mes_selecionado_str = st.selectbox("📅 Mês", opcoes_meses, key="selector_mes_lancamentos")
             resumo_selecionado = next(m for m in meses_disponiveis if f"{m.mes}/{m.ano}" == mes_selecionado_str)
         with col_info:
-            st.info("Selecione o mês para visualizar métricas, gráficos e gerenciar lançamentos.")
+            st.caption("Selecione o mês para visualizar métricas, gráficos e gerenciar lançamentos.")
 
         st.divider()
 
