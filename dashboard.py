@@ -881,14 +881,27 @@ elif page == "Buscar Licitações":
     
     st.divider()
     with st.expander("Limpeza do banco de dados"):
-        st.warning("Isso apagará todas as licitações importadas.")
+        st.warning("Isso apagará todas as licitações NÃO SALVAS (que não foram fixadas com '⭐ Fixar').")
         if st.button("Limpar Histórico de Licitações"):
             session = get_session()
-            session.query(ItemLicitacao).delete()
-            session.query(Licitacao).delete()
-            session.commit()
+            
+            # Seleciona IDs para exclusão (preserva 'Salva')
+            to_delete = session.query(Licitacao.id).filter(Licitacao.status != 'Salva').all()
+            ids_to_delete = [row[0] for row in to_delete]
+            
+            if ids_to_delete:
+                # Apaga itens filhos primeiro (segurança contra falha de cascade)
+                session.query(ItemLicitacao).filter(ItemLicitacao.licitacao_id.in_(ids_to_delete)).delete(synchronize_session=False)
+                # Apaga licitações
+                session.query(Licitacao).filter(Licitacao.id.in_(ids_to_delete)).delete(synchronize_session=False)
+                
+                session.commit()
+                st.success(f"Limpeza concluída! {len(ids_to_delete)} registros removidos. Itens 'Salvas' foram mantidos.")
+            else:
+                st.info("Nada para limpar (banco vazio ou todos os itens estão Salvos).")
+            
             session.close()
-            st.success("Banco de dados limpo!")
+            time.sleep(1)
             st.rerun()
 
 elif page == "🧠 Análise de IA":
@@ -1175,10 +1188,10 @@ elif page == "Dashboard":
                 
                 # Ações Extras
                 st.markdown("---")
-                col_act1, col_act2, col_act3 = st.columns(3)
+                col_act1, col_act2, col_act3, col_act4 = st.columns(4)
                 
                 with col_act1:
-                    if st.button("📂 Ver Arquivos Anexos", key=f"btn_arq_{lic.id}"):
+                    if st.button("📂 Ver Arquivos", key=f"btn_arq_{lic.id}"):
                         with st.spinner("Buscando arquivos..."):
                             client = PNCPClient()
                             # Reconstrói dict mínimo
@@ -1196,12 +1209,12 @@ elif page == "Dashboard":
                                 st.error("ID PNCP inválido para busca de arquivos.")
 
                 with col_act2:
-                    if st.button("🧠 Análise de IA (Gemini)", key=f"btn_ai_{lic.id}"):
+                    if st.button("🧠 Análise IA", key=f"btn_ai_{lic.id}"):
                         # Redireciona ou executa análise inline
                         st.info("Para análise detalhada, use a aba '🧠 Análise de IA' no menu lateral.")
 
                 with col_act3:
-                    if st.button("📱 Enviar no WhatsApp", key=f"btn_wpp_{lic.id}"):
+                    if st.button("📱 WhatsApp", key=f"btn_wpp_{lic.id}"):
                         import json
                         session = get_session()
 
@@ -1260,6 +1273,20 @@ elif page == "Dashboard":
 
                             if erros:
                                 st.error("❌ Erros ao enviar:\n" + "\n".join(erros))
+
+                with col_act4:
+                    # Botão de Salvar/Fixar
+                    label_salvar = "⭐ Fixar" if lic.status != 'Salva' else "❌ Desafixar"
+                    if st.button(label_salvar, key=f"btn_save_{lic.id}", help="Salva no banco permanente (não será apagado na limpeza)"):
+                        if lic.status == 'Salva':
+                            lic.status = 'Nova'
+                            st.toast("Licitação desafixada.", icon="ℹ️")
+                        else:
+                            lic.status = 'Salva'
+                            st.toast("Licitação salva com sucesso!", icon="✅")
+                        session.commit()
+                        time.sleep(0.5)
+                        st.rerun()
 
 elif page == "💰 Gestão Financeira":
     st.header("💰 Gestão Financeira - Extratos Banco do Brasil")
