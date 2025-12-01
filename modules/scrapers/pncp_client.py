@@ -323,7 +323,16 @@ class PNCPClient:
         "RECARGA DE OXIGENIO", "OXIGENIO MEDICINAL", "CESSAO DE CILINDRO", "COMODATO DE CILINDROS",
         "TELECOMUNICACOES", "TELECOMUNICAÇÕES", "REDE DE DADOS", "REDE WIFI", "WI-FI", "WIFI",
         "MATERIAL PARA EMBALAGEM", "MATERIAIS PARA EMBALAGEM", "CONDICIONAMENTO E EMBALAGEM",
-        "VALVULA", "VALVULAS", "CONEXAO", "CONEXOES", "TRATAMENTO DE AGUA", "SANEAMENTO"
+        "VALVULA", "VALVULAS", "CONEXAO", "CONEXOES", "TRATAMENTO DE AGUA", "SANEAMENTO",
+        
+        # Novos filtros solicitados (Atualização Recente)
+        "LAVANDERIA", "LAVAGEM DE ROUPA", "HIGIENIZACAO DE TEXTEIS",
+        "SOFTWARE", "SOFTWARES", "SISTEMA DE GESTAO", "SIAFIC", "LICENCA DE USO",
+        "MATERIAL PERSONALIZADO", "BRINDES PERSONALIZADOS",
+        "FOTOVOLTAICA", "FOTOVOLTAICO", "USINA SOLAR", "ENERGIA SOLAR", "PAINEL SOLAR",
+        "ARES CONDICIONADOS", "ARES-CONDICIONADOS", "APARELHO DE AR",
+        "PISCINA", "ESPELHO D'AGUA", "ESPELHO D AGUA", "LIMPEZA DE PISCINA",
+        "MEDICINA DO TRABALHO", "EXAMES OCUPACIONAIS", "SAUDE OCUPACIONAL", "ASO"
     ]
     TERMOS_NEGATIVOS_PADRAO = TERMOS_NEGATIVOS_PADRAO + TERMOS_NEGATIVOS_EXTRA
 
@@ -363,22 +372,40 @@ class PNCPClient:
         termos_prioritarios_upper = [t.upper() for t in self.TERMOS_PRIORITARIOS]
 
         hoje = datetime.now()
-        data_inicial_dt = hoje - timedelta(days=dias_busca)
+        
+        # LÓGICA OTIMIZADA:
+        # Se queremos apenas abertas, não importa quando foi publicado (pode ser há 30 dias).
+        # Importa que o encerramento seja futuro.
+        # Por isso, estendemos a dataInicial de publicação para garantir que não perdemos nada,
+        # mas filtramos rigidamente pela dataFinalEncerramentoProposta.
+        
+        if apenas_abertas:
+            data_inicial_dt = hoje - timedelta(days=120) # Janela segura de publicação (4 meses)
+            data_inicial_enc_dt = hoje # Encerramento a partir de HOJE
+            data_final_enc_dt = hoje + timedelta(days=120) # Até 4 meses pra frente
+        else:
+            data_inicial_dt = hoje - timedelta(days=dias_busca)
+            data_inicial_enc_dt = None
+            data_final_enc_dt = None
+
         data_final_dt = hoje
-        data_final_enc_dt = hoje + timedelta(days=60)  # janela padrão para enc. propostas futuras
 
         # Formatos aceitos pela API variam; tentaremos AAAAMMDD e AAAA-MM-DD
         data_inicial = data_inicial_dt.strftime('%Y%m%d')
         data_final = data_final_dt.strftime('%Y%m%d')
         data_inicial_iso = data_inicial_dt.strftime('%Y-%m-%d')
         data_final_iso = data_final_dt.strftime('%Y-%m-%d')
-        data_final_enc = data_final_enc_dt.strftime('%Y%m%d')
+        
+        data_inicial_enc = data_inicial_enc_dt.strftime('%Y%m%d') if data_inicial_enc_dt else None
+        data_final_enc = data_final_enc_dt.strftime('%Y%m%d') if data_final_enc_dt else None
         
         resultados = []
 
         print(f"\n{'='*80}")
         print("[PNCP] INICIANDO BUSCA NO PNCP")
-        print(f"Periodo: {data_inicial} a {data_final}")
+        print(f"Publicado entre: {data_inicial} e {data_final}")
+        if apenas_abertas:
+            print(f"Encerramento entre: {data_inicial_enc} e {data_final_enc}")
         print(f"Estados: {estados}")
         print(f"Filtro apenas abertas: {apenas_abertas}")
         print(f"{'='*80}\n")
@@ -403,9 +430,9 @@ class PNCPClient:
                         "pagina": str(pagina),
                         "tamanhoPagina": str(tamanho_pagina)
                     }
-                    if apenas_abertas:
+                    if apenas_abertas and data_inicial_enc and data_final_enc:
                         # Alguns clusters aceitam filtro direto por encerramento de proposta
-                        params["dataInicialEncerramentoProposta"] = hoje.strftime("%Y%m%d")
+                        params["dataInicialEncerramentoProposta"] = data_inicial_enc
                         params["dataFinalEncerramentoProposta"] = data_final_enc
 
                     try:
@@ -630,4 +657,50 @@ class PNCPClient:
             return parsed
         except Exception as e:
             print(f"Erro buscar_por_id: {e}")
+            return None
+
+    def buscar_precos_historicos(self, descricao_item, uf=None, dias=90):
+        """
+        Busca histórico de preços HOMOLOGADOS para um item similar.
+        Usa a API de Itens: /api/consulta/v1/contratacoes/itens
+        Retorna estatísticas (média, min, max) e lista de preços.
+        """
+        url = "https://pncp.gov.br/api/consulta/v1/contratacoes/itens"
+        
+        hoje = datetime.now()
+        data_ini = (hoje - timedelta(days=dias)).strftime('%Y%m%d')
+        data_fim = hoje.strftime('%Y%m%d')
+        
+        params = {
+            "dataInicial": data_ini,
+            "dataFinal": data_fim,
+            "descricao": descricao_item,
+            "pagina": "1",
+            "tamanhoPagina": "20"
+        }
+        if uf:
+            params["uf"] = uf
+            
+        try:
+            resp = self.session.get(url, params=params, headers=self.headers, timeout=15)
+            if resp.status_code == 200:
+                dados = resp.json().get('data', [])
+                precos = []
+                for d in dados:
+                    # Prioriza valor homologado (vencedor), senão pega estimado
+                    val = d.get('valorUnitarioHomologado') or d.get('valorUnitarioEstimado')
+                    if val and val > 0:
+                        precos.append(val)
+                
+                if not precos:
+                    return None
+                    
+                return {
+                    "media": sum(precos) / len(precos),
+                    "min": min(precos),
+                    "max": max(precos),
+                    "amostra": len(precos)
+                }
+        except Exception as e:
+            print(f"Erro ao buscar preços: {e}")
             return None
