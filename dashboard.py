@@ -1655,7 +1655,12 @@ elif page == "💰 Gestão Financeira":
         )
         
         if apenas_pendentes:
-            query = query.filter(ExtratoBB.tipo == 'Ordem Bancária')
+            # Lógica melhorada: Mostra tudo que é 632 (SESAP/Base) e que AINDA NÃO foi classificado nas categorias finais
+            categorias_classificadas = ['Hematologia', 'Coagulação', 'Coagulacao', 'Ionograma', 'Base', 'Recebimento Base Aérea']
+            query = query.filter(
+                ExtratoBB.historico.ilike('%632 Ordem Bancária%'),
+                not_(ExtratoBB.tipo.in_(categorias_classificadas))
+            )
         
         if filtro_status != "Todos":
             query = query.filter(ExtratoBB.status.ilike(filtro_status))
