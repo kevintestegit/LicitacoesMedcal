@@ -8,6 +8,13 @@ import re
 import unicodedata
 import json
 import google.generativeai as genai
+import urllib3
+from requests.adapters import HTTPAdapter
+from urllib3.util.retry import Retry
+
+# Suprime avisos de SSL inseguro (comuns em sites de diários municipais)
+urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
+
 from modules.database.database import get_session, Configuracao
 from .pncp_client import PNCPClient
 
@@ -25,6 +32,13 @@ class DiarioMunicipalScraper(ExternalScraper):
         self.BASE_URL = base_url
         self.UF = uf
         self.ORIGEM = origem_nome
+        
+        # Configura sessão com retries para maior robustez
+        self.session = requests.Session()
+        retries = Retry(total=5, backoff_factor=1, status_forcelist=[500, 502, 503, 504])
+        adapter = HTTPAdapter(max_retries=retries)
+        self.session.mount('https://', adapter)
+        self.session.mount('http://', adapter)
 
     def _get_pdf_url(self, soup):
         # 1. Tenta link direto
@@ -103,7 +117,8 @@ class DiarioMunicipalScraper(ExternalScraper):
             headers = {
                 "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36"
             }
-            response = requests.get(self.BASE_URL, headers=headers, timeout=15, verify=False)
+            # Aumentado timeout para 30s e usando session com retry
+            response = self.session.get(self.BASE_URL, headers=headers, timeout=30, verify=False)
             response.raise_for_status()
             soup = BeautifulSoup(response.text, 'html.parser')
 
@@ -122,7 +137,8 @@ class DiarioMunicipalScraper(ExternalScraper):
                     "origem": self.ORIGEM
                 }]
 
-            pdf_response = requests.get(pdf_url, headers=headers, timeout=60, verify=False)
+            # Aumentado timeout para 90s para download de PDF
+            pdf_response = self.session.get(pdf_url, headers=headers, timeout=90, verify=False)
             pdf_response.raise_for_status()
 
             f = io.BytesIO(pdf_response.content)
