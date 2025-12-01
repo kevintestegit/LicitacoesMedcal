@@ -1060,7 +1060,15 @@ elif page == "Dashboard":
     st.header("Painel de Controle")
     
     session = get_session()
-    licitacoes_db = session.query(Licitacao).all()
+
+    # Opção para filtrar licitações salvas
+    apenas_salvas = st.checkbox("⭐ Mostrar apenas licitações Salvas", value=False)
+    
+    query = session.query(Licitacao)
+    if apenas_salvas:
+        query = query.filter(Licitacao.status == 'Salva')
+    
+    licitacoes_db = query.all()
     
     # Ordenação Inteligente: Primeiro por número de itens com match, depois por data (mais recente)
     licitacoes = sorted(
