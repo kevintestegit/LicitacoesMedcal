@@ -95,3 +95,35 @@ class ResumoMensal(Base):
 
     def __repr__(self):
         return f"<ResumoMensal({self.mes}/{self.ano} - R$ {self.total_valor:.2f})>"
+
+
+class SesapPagamento(Base):
+    """
+    Pagamentos/faturas SESAP importados da planilha de controle
+    (usados para conciliação com extratos BB/Sicredi)
+    """
+    __tablename__ = 'sesap_pagamentos'
+
+    id = Column(Integer, primary_key=True)
+
+    # Dados da planilha
+    filial = Column(String(100))
+    competencia = Column(String(50))
+    unidade = Column(String(150))
+    contrato = Column(String(50))
+    cliente_fornecedor = Column(String(200))
+    dt_emissao = Column(Date)
+    num_doc = Column(String(50))  # Fatura/Nº Doc
+    valor_liquido = Column(Float)
+    dt_vencimento = Column(Date)
+    num_processo = Column(String(100))
+    status_sesap = Column(String(150))  # Status informado pela SESAP
+    status_manual = Column(String(150))  # Status/observação preenchida manualmente (coluna N)
+    banco = Column(String(10))  # 001 (BB) / 748 (Sicredi) / etc
+    observacao = Column(Text)
+    arquivo_origem = Column(String(255))
+
+    data_upload = Column(DateTime, default=datetime.now)
+
+    def __repr__(self):
+        return f"<SesapPagamento({self.num_doc or '?'} | R$ {self.valor_liquido or 0:.2f} | {self.status_sesap or 'N/A'})>"

@@ -4,6 +4,7 @@ import time
 import re
 import concurrent.futures
 from threading import Lock
+import unicodedata
 
 class PNCPClient:
     BASE_URL = "https://pncp.gov.br/api/consulta/v1/contratacoes/publicacao"
@@ -174,7 +175,7 @@ class PNCPClient:
         "ANTIBIOTICO", "ANTIBIÓTICO", "ANTIBIOTICOS", "ANTIBIÓTICOS", "ANALGESICO", "ANALGÉSICO",
         "ANTI-INFLAMATORIO", "ANTI-INFLAMATÓRIO", "ANESTESICO", "ANESTÉSICO", "PSICOTROPICO", "PSICOTRÓPICO",
         "FARMACIA BASICA", "FARMÁCIA BÁSICA", "FARMACIA HOSPITALAR", "FARMÁCIA HOSPITALAR",
-        "AQUISICAO DE MEDICAMENTOS", "AQUISIÇÃO DE MEDICAMENTOS", "DISTRIBUICAO DE MEDICAMENTOS",
+        # "AQUISICAO DE MEDICAMENTOS", "AQUISIÇÃO DE MEDICAMENTOS", "DISTRIBUICAO DE MEDICAMENTOS", <--- REMOVIDO PARA EVITAR FALSO POSITIVO EM LOTES MISTOS
         
         # Bloqueio de Itens Irrelevantes (Enxoval, Livros, etc)
         "ENXOVAL", "CAMA E MESA", "ROUPARIA", "TECIDOS", "TECIDO", "LENÇOL", "LENCOL", "TRAVESSEIRO",
@@ -251,6 +252,13 @@ class PNCPClient:
         "MATERIAL HOSPITALAR", "MATERIAIS HOSPITALARES", "PRODUTOS HOSPITALARES",
         "MATERIAL LABORATORIAL", "MATERIAIS LABORATORIAIS", "PRODUTOS LABORATORIAIS",
         "INSUMOS HOSPITALARES", "INSUMOS LABORATORIAIS", "INSUMO HOSPITALAR", "INSUMO LABORATORIAL",
+        "MATERIAL MEDICO E HOSPITALAR", "MATERIAL MÉDICO E HOSPITALAR", 
+        "MATERIAIS MEDICOS E HOSPITALARES", "MATERIAIS MÉDICOS E HOSPITALARES",
+        "INSUMOS MEDICOS HOSPITALARES", "INSUMOS MÉDICOS HOSPITALARES",
+        "INSUMOS MEDICO HOSPITALARES", "INSUMOS MÉDICO HOSPITALARES",
+        "INSUMOS DE LABORATORIO", "INSUMOS DE LABORATÓRIO",
+        "MATERIAIS DE LABORATORIO", "MATERIAIS DE LABORATÓRIO",
+        "CORRELATOS", "VIDRARIA", "VIDRARIAS",
         
         # EQUIPAMENTOS MÉDICO-HOSPITALARES (várias formas de escrita)
         "EQUIPAMENTO MEDICO HOSPITALAR", "EQUIPAMENTOS MEDICO HOSPITALARES",
@@ -454,6 +462,34 @@ class PNCPClient:
         if PNCPClient._TERMOS_NEGATIVOS_SET is None:
             PNCPClient._TERMOS_NEGATIVOS_SET = set(t.upper() for t in self.TERMOS_NEGATIVOS_PADRAO)
 
+        # Cache de termos normalizados para matching robusto (acentos/pontuação/hífens)
+        # Observação: no PNCP, o objeto frequentemente contém hífens, colchetes e variações de acentuação.
+        # Normalizar reduz falsos negativos na detecção de termos positivos/negativos.
+        self._contexto_norm = [self._normalize_for_match(t) for t in self.CONTEXTO_LABORATORIAL]
+        self._prioritarios_norm = [self._normalize_for_match(t) for t in self.TERMOS_PRIORITARIOS]
+        self._negativos_norm = [self._normalize_for_match(t) for t in self.TERMOS_NEGATIVOS_PADRAO]
+        self._eventos_neg_norm = [self._normalize_for_match(t) for t in self.TERMOS_EVENTOS_NEGATIVOS]
+
+    def _normalize_for_match(self, texto: str) -> str:
+        """
+        Normaliza para matching por substring:
+        - remove acentos
+        - uppercase
+        - converte pontuação/hífens em espaço
+        - colapsa espaços
+        """
+        if not texto:
+            return ""
+        # Remove acentos
+        texto = "".join(
+            ch for ch in unicodedata.normalize("NFKD", str(texto)) if not unicodedata.combining(ch)
+        )
+        texto = texto.upper()
+        # Mantém letras/números; resto vira espaço (pega hífens, barras, pontuação)
+        texto = re.sub(r"[^A-Z0-9]+", " ", texto)
+        texto = re.sub(r"\s+", " ", texto).strip()
+        return texto
+
     def calcular_dias(self, data_iso):
         """Retorna número de dias entre HOJE e a data (só a parte AAAA-MM-DD)."""
         if not data_iso:
@@ -466,14 +502,16 @@ class PNCPClient:
         except Exception:
             return -999
 
-    def avaliar_objeto(self, obj_upper, termos_positivos_upper, termos_prioritarios_upper):
+    def avaliar_objeto(self, obj_upper: str, termos_positivos_norm: list[str], termos_prioritarios_norm: list[str]):
         """
         Decide se o objeto passa pelo filtro e explica o motivo.
         - Prioriza termos prioritários.
         - Para termos positivos genéricos (ex.: manutenção), exige contexto laboratorial/hospitalar.
         """
-        termos_prio = [t for t in termos_prioritarios_upper if t in obj_upper]
-        termos_pos = [t for t in termos_positivos_upper if t in obj_upper] if termos_positivos_upper else []
+        obj_norm = self._normalize_for_match(obj_upper)
+
+        termos_prio = [t for t in termos_prio_norm if t and t in obj_norm]
+        termos_pos = [t for t in termos_pos_norm if t and t in obj_norm] if termos_pos_norm else []
 
         if termos_prio:
             return True, f"Termos prioritários: {', '.join(termos_prio[:3])}", termos_prio
@@ -481,7 +519,7 @@ class PNCPClient:
         if not termos_pos:
             return False, "Sem termos positivos", []
 
-        tem_contexto_lab = any(ctx in obj_upper for ctx in self.CONTEXTO_LABORATORIAL)
+        tem_contexto_lab = any(ctx and ctx in obj_norm for ctx in self._contexto_norm)
         if tem_contexto_lab or len(termos_pos) >= 2:
             motivo = f"Termos positivos: {', '.join(termos_pos[:3])}"
             if tem_contexto_lab:
@@ -490,7 +528,7 @@ class PNCPClient:
 
         return False, "Sem contexto laboratorial/hospitalar", termos_pos
 
-    def buscar_oportunidades(self, dias_busca=30, estados=['RN', 'PB', 'PE', 'AL'], termos_positivos=[], termos_negativos=None, apenas_abertas=True):
+    def buscar_oportunidades(self, dias_busca=30, estados=['RN', 'PB', 'PE', 'AL'], termos_positivos=None, termos_negativos=None, apenas_abertas=True):
         """
         Busca licitações (Pregão/Dispensa) publicadas nos últimos X dias.
         Aplica filtros de termos positivos (OR) e negativos (NOT).
@@ -499,9 +537,18 @@ class PNCPClient:
         if termos_negativos is None:
             termos_negativos = self.TERMOS_NEGATIVOS_PADRAO + self.TERMOS_EVENTOS_NEGATIVOS
 
-        termos_negativos_upper = list(dict.fromkeys(t.upper() for t in termos_negativos))
-        termos_positivos_upper = list(dict.fromkeys(t.upper() for t in termos_positivos)) if termos_positivos else []
-        termos_prioritarios_upper = [t.upper() for t in self.TERMOS_PRIORITARIOS]
+        if termos_positivos is None or len(termos_positivos) == 0:
+            termos_positivos = self.TERMOS_POSITIVOS_PADRAO
+
+        # Mantém interface atual (upper), mas o matching interno usa normalização robusta
+        termos_negativos_upper = list(dict.fromkeys(str(t).upper() for t in termos_negativos))
+        termos_positivos_upper = list(dict.fromkeys(str(t).upper() for t in termos_positivos))
+        termos_prioritarios_upper = [str(t).upper() for t in self.TERMOS_PRIORITARIOS]
+
+        # Pré-normaliza negativos uma vez por chamada (permite sobrescrita via parâmetros)
+        termos_neg_norm = [self._normalize_for_match(t) for t in termos_negativos_upper]
+        termos_pos_norm = [self._normalize_for_match(t) for t in termos_positivos_upper]
+        termos_prio_norm = [self._normalize_for_match(t) for t in termos_prioritarios_upper]
 
         hoje = datetime.now()
         
@@ -589,19 +636,20 @@ class PNCPClient:
                     for item in data:
                         obj_raw = item.get('objetoCompra') or item.get('objeto') or ""
                         obj = obj_raw.upper()
+                        obj_norm = self._normalize_for_match(obj)
                         
                         if not obj:
                             continue
 
                         # Filtro Positivo + Contexto (evita falsos positivos de manutenção genérica)
-                        aprovado, motivo_aprov, termos_hit = self.avaliar_objeto(obj, termos_positivos_upper, termos_prioritarios_upper)
+                        aprovado, motivo_aprov, termos_hit = self.avaliar_objeto(obj, termos_pos_norm, termos_prio_norm)
                         if not aprovado:
                             continue
                         
                         # Filtro Negativo OTIMIZADO: verifica cada termo
                         bloqueado = False
-                        for t in termos_negativos_upper:
-                            if t in obj:
+                        for t in termos_neg_norm:
+                            if t and t in obj_norm:
                                 bloqueado = True
                                 break
                         if bloqueado:
@@ -672,6 +720,7 @@ class PNCPClient:
 
     def _parse_licitacao(self, item):
         orgao = item.get('orgaoEntidade', {})
+        unidade = item.get('unidadeOrgao', {}) or {}
         cnpj = orgao.get('cnpj') or orgao.get('cnpjComprador')
         ano = item.get('anoCompra')
         seq = item.get('sequencialCompra')
@@ -681,7 +730,8 @@ class PNCPClient:
         return {
             "pncp_id": f"{cnpj}-{ano}-{seq}",
             "orgao": orgao.get('razaoSocial', 'Desconhecido'),
-            "uf": orgao.get('ufSigla', 'BR'),
+            # No payload atual do PNCP, UF costuma vir em unidadeOrgao.ufSigla (orgaoEntidade não traz UF)
+            "uf": unidade.get('ufSigla') or orgao.get('ufSigla') or 'BR',
             "modalidade": {6: "Pregão", 8: "Dispensa", 9: "Inexigibilidade", 12: "Emergencial"}.get(item.get('modalidadeId'), "Outra"),
             "data_sessao": item.get('dataAberturaOuSessao'),
             "data_publicacao": item.get('dataPublicacaoPncp'),

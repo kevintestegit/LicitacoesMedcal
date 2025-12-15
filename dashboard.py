@@ -5,6 +5,7 @@ from datetime import datetime, date
 import time
 import os
 import unicodedata
+from pathlib import Path
 from rapidfuzz import fuzz
 from sqlalchemy import func, or_, not_, and_
 from io import BytesIO
@@ -13,7 +14,13 @@ from io import BytesIO
 from modules.database.database import init_db, get_session, Licitacao, ItemLicitacao, Produto, Configuracao
 from modules.finance.bank_models import ExtratoBB, ResumoMensal
 from modules.finance.extrato_parser import importar_extrato_bb, processar_texto_extrato
-from modules.finance import init_finance_db, get_finance_session
+from modules.finance import (
+    init_finance_db,
+    init_finance_historico_db,
+    get_finance_session,
+    get_finance_historico_session,
+    importar_extrato_historico,
+)
 from modules.scrapers.pncp_client import PNCPClient
 from modules.scrapers.external_scrapers import FemurnScraper, FamupScraper, AmupeScraper, AmaScraper, MaceioScraper, MaceioInvesteScraper, MaceioSaudeScraper
 from modules.utils.notifications import WhatsAppNotifier
@@ -32,6 +39,7 @@ from modules.core.deep_analyzer import deep_analyzer  # Análise profunda de lic
 # Inicializa Banco
 init_db()
 init_finance_db()
+init_finance_historico_db()
 
 # Inicializa IA (tenta configurar se tiver chave)
 try:
@@ -1846,7 +1854,80 @@ elif page == "💰 Gestão Financeira":
     st.header("💰 Gestão Financeira - Extratos Banco do Brasil")
     st.info("Importe e visualize seus extratos bancários (Formato Excel BB).")
 
-    session = get_finance_session()
+    col_base, _ = st.columns([1, 4])
+    with col_base:
+        base_escolhida = st.radio(
+            "Base de dados",
+            ["Financeiro Atual", "Financeiro Histórico"],
+            horizontal=True,
+            help="Escolha onde salvar/consultar: ativo (2025 em diante) ou histórico (anos anteriores)."
+        )
+    is_historico = base_escolhida == "Financeiro Histórico"
+    session_factory = get_finance_historico_session if is_historico else get_finance_session
+    session = session_factory()
+    base_label = "Histórico" if is_historico else "Atual"
+
+    # === BUSCA GLOBAL POR FATURA/OBS (ambas as bases) ===
+    with st.expander("🔎 Busca Global por Fatura/Obs (todas as bases e meses)", expanded=False):
+        termo_fatura_global = st.text_input("Informe parte da fatura/obs/histórico (ex: 3194)", key="busca_fatura_global")
+        if termo_fatura_global:
+            # Consulta na base atual selecionada
+            query_base = session.query(ExtratoBB).filter(
+                or_(
+                    ExtratoBB.fatura.ilike(f"%{termo_fatura_global}%"),
+                    ExtratoBB.observacoes.ilike(f"%{termo_fatura_global}%"),
+                    ExtratoBB.historico.ilike(f"%{termo_fatura_global}%")
+                )
+            ).order_by(ExtratoBB.dt_balancete.desc()).limit(200).all()
+
+            # Consulta na outra base
+            if is_historico:
+                outra_session = get_finance_session()
+                outra_label = "Financeiro Atual"
+            else:
+                outra_session = get_finance_historico_session()
+                outra_label = "Financeiro Histórico"
+
+            query_outra = outra_session.query(ExtratoBB).filter(
+                or_(
+                    ExtratoBB.fatura.ilike(f"%{termo_fatura_global}%"),
+                    ExtratoBB.observacoes.ilike(f"%{termo_fatura_global}%"),
+                    ExtratoBB.historico.ilike(f"%{termo_fatura_global}%")
+                )
+            ).order_by(ExtratoBB.dt_balancete.desc()).limit(200).all()
+
+            def montar_df(lst, label):
+                data = []
+                for l in lst:
+                    data.append({
+                        "Base": label,
+                        "Data": l.dt_balancete,
+                        "Mês": l.mes_referencia,
+                        "Ano": l.ano_referencia,
+                        "Status": l.status,
+                        "Histórico": l.historico,
+                        "Documento": l.documento,
+                        "Valor": l.valor,
+                        "Fatura/Obs": l.fatura or l.observacoes
+                    })
+                return pd.DataFrame(data)
+
+            df_base = montar_df(query_base, base_label)
+            df_outra = montar_df(query_outra, outra_label)
+            df_result = pd.concat([df_base, df_outra], ignore_index=True)
+
+            if df_result.empty:
+                st.info("Nada encontrado nas duas bases.")
+            else:
+                st.caption("Mostrando até 200 resultados por base, ordenados pela data mais recente.")
+                st.dataframe(df_result, use_container_width=True, hide_index=True)
+                csv_data = df_result.to_csv(index=False).encode('utf-8')
+                st.download_button(
+                    "📥 Baixar resultados (CSV)",
+                    data=csv_data,
+                    file_name=f"busca_fatura_global_{termo_fatura_global}.csv",
+                    mime="text/csv"
+                )
 
     # === SEÇÃO DE UPLOAD ===
     col_up1, col_up2 = st.columns(2)
@@ -1876,6 +1957,31 @@ elif page == "💰 Gestão Financeira":
                             if os.path.exists(temp_path):
                                 os.remove(temp_path)
                                 
+                    st.rerun()
+
+        with st.expander("📤 Importar Arquivo Excel (Histórico flexível)", expanded=False):
+            st.caption("Use para Sicredi ou planilhas fora do padrão BB (colunas mínimas: Data, Descrição, Valor).")
+            banco_origem = st.selectbox("Banco/Origem", ["Sicredi", "BB", "Outro"], key="hist_banco_origem")
+            uploaded_hist = st.file_uploader("Selecione o arquivo Excel (.xlsx)", type=['xlsx'], key="hist_uploader")
+
+            if uploaded_hist:
+                if st.button("Processar Histórico", key="btn_process_hist"):
+                    with st.spinner("Lendo arquivo histórico..."):
+                        temp_path = f"temp_extrato_{int(time.time())}.xlsx"
+                        with open(temp_path, "wb") as f:
+                            f.write(uploaded_hist.getbuffer())
+                        try:
+                            stats = importar_extrato_historico(temp_path, session, banco_origem)
+                            st.success(f"✅ Histórico importado em {base_label}! {stats['importados']} lançamentos.")
+                            if stats.get('duplicados', 0) > 0:
+                                st.warning(f"{stats['duplicados']} lançamentos duplicados ignorados.")
+                            if stats.get('erros'):
+                                st.error(f"Erros: {stats['erros']}")
+                        except Exception as e:
+                            st.error(f"Erro ao processar histórico: {str(e)}")
+                        finally:
+                            if os.path.exists(temp_path):
+                                os.remove(temp_path)
                     st.rerun()
 
     with col_up2:
@@ -1922,6 +2028,30 @@ elif page == "💰 Gestão Financeira":
 
     st.divider()
 
+    # === IMPORTAR PLANILHA SESAP ===
+    with st.expander("📥 Importar Planilha SESAP (listagem a receber/pagos)", expanded=False):
+        st.caption("Usa o XLSX que vem da SESAP (ex.: HEMATO 165_2022 ATT.xlsx). Detecta colunas: Filial, Competência, Unidade, Contrato, Cliente, Dt.Emissão, Nº Doc (fatura), Vr.Líquido, Dt.Vencimento, Nº DO PROCESSO, Status, Pagamento (manual).")
+        uploaded_sesap = st.file_uploader("Selecione a planilha SESAP (.xlsx)", type=['xlsx'], key="sesap_uploader")
+        if uploaded_sesap and st.button("Processar Planilha SESAP", key="btn_process_sesap"):
+            with st.spinner("Importando planilha SESAP..."):
+                temp_path = f"temp_sesap_{int(time.time())}.xlsx"
+                with open(temp_path, "wb") as f:
+                    f.write(uploaded_sesap.getbuffer())
+                try:
+                    from modules.finance import importar_planilha_sesap
+                    stats = importar_planilha_sesap(temp_path, session, arquivo_origem=uploaded_sesap.name)
+                    st.success(f"✅ SESAP importada ({base_label}): {stats['importados']} linhas, {stats['duplicados']} duplicadas.")
+                    if stats.get('erros'):
+                        st.error(f"Erros: {stats['erros']}")
+                except Exception as e:
+                    st.error(f"Erro ao importar SESAP: {e}")
+                finally:
+                    if os.path.exists(temp_path):
+                        os.remove(temp_path)
+            st.rerun()
+
+    st.divider()
+
     # === ASSISTENTE IA ===
     with st.expander("🤖 Assistente Financeiro (IA)", expanded=True):
         col_ai1, col_ai2 = st.columns([4, 1])
@@ -1934,7 +2064,7 @@ elif page == "💰 Gestão Financeira":
             
         if btn_perguntar and pergunta_usuario:
             from modules.finance.finance_ai import FinanceAI
-            finance_ai = FinanceAI()
+            finance_ai = FinanceAI(session_factory=session_factory, fonte_nome=base_label)
             
             with st.spinner("Analisando dados..."):
                 resposta = finance_ai.analisar_pergunta(pergunta_usuario)
@@ -2040,10 +2170,19 @@ elif page == "💰 Gestão Financeira":
 
         # Total SESAP = Apenas lançamentos com histórico "632 Ordem Bancária" (Excluindo Base Aérea)
         # (valor total que a SESAP efetivamente pagou)
+        sesap_condition = or_(
+            ExtratoBB.tipo == 'Recebimento SESAP',
+            ExtratoBB.historico.ilike('%632 Ordem Bancária%'),
+            ExtratoBB.historico.ilike('%140319%'),  # TED 140319... (Sicredi)
+            ExtratoBB.historico.ilike('%082417%'),  # TED 082417... (Sicredi)
+            ExtratoBB.historico.ilike('%FUSERN%'),
+            ExtratoBB.historico.ilike('%CUSTEIO SUS%')
+        )
+
         total_sesap = session.query(func.sum(ExtratoBB.valor)).filter(
             ExtratoBB.mes_referencia == resumo_selecionado.mes,
             ExtratoBB.ano_referencia == resumo_selecionado.ano,
-            ExtratoBB.historico.ilike('%632 Ordem Bancária%'),
+            sesap_condition,
             not_(or_(ExtratoBB.historico.ilike('%12 SEC TES NAC%'), ExtratoBB.historico.ilike('%AEREA%')))
         ).scalar() or 0.0
 
@@ -2103,11 +2242,11 @@ elif page == "💰 Gestão Financeira":
                 # Categorias de detalhamento SESAP que devem ser agrupadas
                 categorias_sesap_detalhamento = ['Hematologia', 'Coagulação', 'Coagulacao', 'Ionograma', 'Recebimento SESAP']
 
-                # Total SESAP agregado (histórico "632 Ordem Bancária")
+                # Total SESAP agregado (inclui tipo Recebimento SESAP e TEDs identificadas)
                 total_sesap_receita = session.query(func.sum(ExtratoBB.valor)).filter(
                     ExtratoBB.mes_referencia == resumo_selecionado.mes,
                     ExtratoBB.ano_referencia == resumo_selecionado.ano,
-                    ExtratoBB.historico.ilike('%632 Ordem Bancária%'),
+                    sesap_condition,
                     ExtratoBB.valor > 0
                 ).scalar() or 0.0
 
@@ -2175,7 +2314,7 @@ elif page == "💰 Gestão Financeira":
         st.caption("Você pode alterar o **Tipo** e a **Fatura** diretamente na tabela abaixo. Útil para classificar 'Ordem Bancária' como 'Hematologia', Ionograma, etc.")
 
         # Filtros da tabela
-        tf1, tf2, tf3 = st.columns([1, 1, 2])
+        tf1, tf2, tf3, tf4 = st.columns([1, 1, 2, 1])
         with tf1:
             filtro_status = st.selectbox("Status", ["Todos", "Baixado", "Pendente"])
         with tf2:
@@ -2183,6 +2322,10 @@ elif page == "💰 Gestão Financeira":
             apenas_pendentes = st.checkbox("⏳ Classificar O.B.", help="Mostra apenas 'Ordem Bancária' para você definir se é Hematologia, Ionograma, etc.")
         with tf3:
             filtro_texto = st.text_input("Buscar no histórico", placeholder="Ex: Pagamento...")
+        with st.columns(2)[1]:
+            filtro_fatura = st.text_input("Buscar por Fatura/Obs", placeholder="Ex: 3194")
+        with tf4:
+            filtro_sesap = st.checkbox("Somente SESAP", help="Filtra histórico/tipo que contenha SESAP (632, TED 140319/082417, FUSERN, Recebimento SESAP).")
         
         # Query
         query = session.query(ExtratoBB).filter_by(
@@ -2203,6 +2346,18 @@ elif page == "💰 Gestão Financeira":
             
         if filtro_texto:
             query = query.filter(ExtratoBB.historico.ilike(f"%{filtro_texto}%"))
+        if filtro_fatura:
+            query = query.filter(ExtratoBB.fatura.ilike(f"%{filtro_fatura}%"))
+        if filtro_sesap:
+            sesap_condition = or_(
+                ExtratoBB.tipo == 'Recebimento SESAP',
+                ExtratoBB.historico.ilike('%632 Ordem Bancária%'),
+                ExtratoBB.historico.ilike('%140319%'),
+                ExtratoBB.historico.ilike('%082417%'),
+                ExtratoBB.historico.ilike('%FUSERN%'),
+                ExtratoBB.historico.ilike('%CUSTEIO SUS%')
+            )
+            query = query.filter(sesap_condition)
             
         lancamentos = query.order_by(ExtratoBB.dt_balancete.desc()).all()
         
@@ -2426,13 +2581,14 @@ elif page == "💰 Gestão Financeira":
         from modules.finance.backup_manager import BackupManager
 
         backup_manager = BackupManager()
+        backup_manager_hist = BackupManager(db_path=str(Path('data') / 'financeiro_historico.db'))
 
         # Abas
         tab_manual, tab_automatico, tab_restaurar = st.tabs(["📥 Backup Manual", "⚙️ Automático", "♻️ Restaurar"])
 
         with tab_manual:
             st.markdown("### Criar Backup Manual")
-            col_bk1, col_bk2 = st.columns([3, 1])
+            col_bk1, col_bk2, col_bk3 = st.columns([3, 1, 1])
 
             with col_bk1:
                 descricao_backup = st.text_input("Descrição do backup", placeholder="Ex: Antes de importar novos dados")
@@ -2450,11 +2606,23 @@ elif page == "💰 Gestão Financeira":
                         else:
                             st.error(f"❌ Erro ao criar backup: {resultado['erro']}")
 
+            with col_bk3:
+                st.write("")  # Alinhamento
+                if st.button("💾 Backup Histórico", type="secondary"):
+                    with st.spinner("Criando backup do financeiro histórico..."):
+                        resultado = backup_manager_hist.criar_backup(descricao=descricao_backup or "Backup historico manual")
+                        if resultado["sucesso"]:
+                            st.success("✅ Backup histórico criado.")
+                            st.info(f"📁 Arquivo: {resultado['metadata']['arquivo']}")
+                        else:
+                            st.error(f"❌ Erro ao criar backup histórico: {resultado['erro']}")
+
             # Estatísticas
             st.markdown("### 📊 Estatísticas")
             stats = backup_manager.get_estatisticas()
+            stats_hist = backup_manager_hist.get_estatisticas()
 
-            col_st1, col_st2, col_st3 = st.columns(3)
+            col_st1, col_st2, col_st3, col_st4 = st.columns(4)
             with col_st1:
                 st.metric("Total de Backups", stats["total_backups"])
             with col_st2:
@@ -2465,6 +2633,10 @@ elif page == "💰 Gestão Financeira":
                     st.metric("Último Backup", ultimo.strftime("%d/%m/%Y %H:%M"))
                 else:
                     st.metric("Último Backup", "Nenhum")
+            with col_st4:
+                hist_info = stats_hist.get("ultimo_backup")
+                label_hist = "Histórico: Nenhum" if not hist_info else datetime.fromisoformat(hist_info["datetime"]).strftime("%d/%m/%Y %H:%M")
+                st.metric("Backup Histórico", label_hist)
 
         with tab_automatico:
             st.markdown("### ⚙️ Configurar Backup Automático")

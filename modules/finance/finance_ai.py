@@ -1,12 +1,18 @@
 import google.generativeai as genai
 from sqlalchemy import text
 import pandas as pd
-from modules.finance.database import get_finance_session
+from modules.finance.database import get_finance_session, get_finance_historico_session
 from modules.database.database import get_session as get_main_session, Configuracao
 from datetime import date, datetime
 
 class FinanceAI:
-    def __init__(self):
+    def __init__(self, session_factory=None, fonte_nome: str = "financeiro"):
+        """
+        session_factory: callable que retorna uma sessão (padrão: banco financeiro ativo)
+        fonte_nome: usado apenas para mensagem contextual (ativo/histórico)
+        """
+        self.session_factory = session_factory or get_finance_session
+        self.fonte_nome = fonte_nome
         self.api_key = self._get_api_key()
         if self.api_key:
             genai.configure(api_key=self.api_key)
@@ -125,8 +131,8 @@ class FinanceAI:
         return sql_query
 
     def _executar_sql(self, query: str):
-        """Executa a query no banco financeiro"""
-        session = get_finance_session()
+        """Executa a query no banco financeiro selecionado"""
+        session = self.session_factory()
         try:
             # Segurança básica: impedir comandos de modificação
             if any(cmd in query.upper() for cmd in ['DROP', 'DELETE', 'UPDATE', 'INSERT', 'ALTER']):
