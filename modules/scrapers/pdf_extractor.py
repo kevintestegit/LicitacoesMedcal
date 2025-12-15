@@ -33,15 +33,16 @@ class PDFExtractor:
         text_sample = pdf_text[:50000]
 
         prompt = f"""
-        Você é um extrator de dados financeiros de licitações.
-        Analise o texto abaixo (extraído de um PDF) e encontre a TABELA DE ITENS/LOTE.
+        Você é um extrator de dados de licitações públicas.
+        Analise o texto abaixo (extraído de um PDF de edital/termo de referência) e encontre a TABELA DE ITENS/LOTE.
         
         Para cada item, extraia:
-        - numero_item: O número do item/lote.
-        - descricao: Descrição resumida do produto.
-        - quantidade: A quantidade total solicitada (apenas números).
-        - unidade: A unidade de medida (UN, CX, FR, etc).
-        - valor_maximo: O valor unitário máximo/referência (Teto). Se não tiver, procure o valor total e divida pela quantidade.
+        - numero: O número do item/lote (inteiro ou string).
+        - descricao: Descrição COMPLETA do produto/serviço.
+        - quantidade: A quantidade total solicitada (número).
+        - unidade: A unidade de medida (UN, CX, FR, ML, L, KIT, etc).
+        - valor_unitario: O valor unitário máximo/referência. Se não tiver explícito, calcule dividindo valor total pela quantidade. Se não tiver nenhum valor, use 0.
+        - valor_estimado: O valor total estimado do item (valor_unitario * quantidade). Se não tiver, use 0.
         
         TEXTO:
         {text_sample}
@@ -49,14 +50,15 @@ class PDFExtractor:
         Retorne APENAS um JSON válido no formato lista:
         [
             {{
-                "numero_item": "1",
-                "descricao": "Nome do Produto",
-                "quantidade": 100,
-                "unidade": "CX",
-                "valor_maximo": 50.00
+                "numero": 1,
+                "descricao": "Reagente para dosagem de glicose, kit com 500 testes",
+                "quantidade": 10,
+                "unidade": "KIT",
+                "valor_unitario": 150.00,
+                "valor_estimado": 1500.00
             }}
         ]
-        Se não encontrar tabela ou valores, retorne [].
+        Se não encontrar tabela de itens, retorne [].
         """
 
         try:

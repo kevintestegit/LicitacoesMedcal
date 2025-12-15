@@ -2,10 +2,12 @@ import requests
 from datetime import datetime, timedelta, date
 import time
 import re
+import concurrent.futures
+from threading import Lock
 
 class PNCPClient:
     BASE_URL = "https://pncp.gov.br/api/consulta/v1/contratacoes/publicacao"
-    MAX_PAGINAS = 60  # limite alto para não perder editais em estados com muito volume
+    MAX_PAGINAS = 50  # 50 páginas × 50 itens = 2500 licitações por combo (aumentado para melhor cobertura)
     
     # Termos NEGATIVOS padrão (podem ser sobrescritos ou extendidos)
     TERMOS_NEGATIVOS_PADRAO = [
@@ -27,7 +29,7 @@ class PNCPClient:
         "EMISSÃO DE PASSAGENS", "REMARCACAO DE PASSAGEM", "REMARCAÇÃO DE PASSAGEM", "REMARCACAO DE PASSAGENS",
         "REMARCAÇÃO DE PASSAGENS", "Prestação de Serviço de Limpeza", "CONDICIONADORES DE AR", "AQUISIÇÃO DE PNEUS",
         "câmaras de ar", "baterias", "Contratação de instituição financeira", "banco", "CONTROLE EM ZOONOSES",
-        "AQUISIÇÃO DE MEDICAMENTOS (ONCOLÓGICOS)", "MEDICAMENTOS", "PRESTAÇÃO DE SERVIÇO DE LIMPEZA",
+        "PRESTAÇÃO DE SERVIÇO DE LIMPEZA",
         "PRESTAÇÃO DE SERVIÇO DE LIMPEZA E CONSERVAÇÃO", "SISTEMA DE ESTAÇÃO DE TRATAMENTO DE ÁGUA E ESGOTO",
         "SERVIÇOS CONTÍNUOS DE LIMPEZA E DESINFECÇÃO", "LIMPEZA E DESINFECÇÃO", "DESINFECÇÃO", "DESINFECCAO", "LOCAÇÃO DE VEÍCULOS",
         "PRESTAÇÃO DE SERVIÇOS DE LIMPEZA", "RECEPÇÃO", "LIMPEZA", "AQUISIÇÃO DE MATERIAIS E UTENSÍLIOS DOMÉSTICOS",
@@ -51,18 +53,18 @@ class PNCPClient:
         "VENTILADOR PULMONAR", "EPI'S", "INVENTÁRIOS", "INVENTARIOS", "INVENTARIO", "MATERIAL DE EXPEDIENTE", "MATERIAIS DE EXPEDIENTE",
         "EXPEDIENTE", "MATERIAL DE ESCRITÓRIO", "MATERIAIS DE ESCRITÓRIO", "MATERIAL DE INFORMÁTICA", "MATERIAIS DE INFORMÁTICA", "DESSANILIZADOR",
         "DESANILIZADOR", "ÁGUA DESANILIZADA", "AGUA DESANILIZADA", "ÁGUA DESSANILIZADA", "AGUA DESSANILIZADA", "DESSANILIZADORES", "AQUISIÇÃO DE OPME",
-        "ILUMINAÇÃO PUBLICA", "ILUMINACAO PUBLICA", "RASTREAMENTO DE VEÍCULOS", "RASTREAMENTO DE VEICULOS", "MATERIAIS ODONTOLÓGICOS",
-        "MATERIAIS ODONTOLOGICOS", "MATERIAL ODONTOLOGICO", "MATERIAL ODONTOLÓGICO", "INSTITUIÇÃO FINANCEIRA", "INSTITUICAO FINANCEIRA",
+        "ILUMINAÇÃO PUBLICA", "ILUMINACAO PUBLICA", "RASTREAMENTO DE VEÍCULOS", "RASTREAMENTO DE VEICULOS", 
+        "INSTITUIÇÃO FINANCEIRA", "INSTITUICAO FINANCEIRA",
         "SERVIÇOS DE ENGENHARIA", "SERVICOS DE ENGENHARIA", "SERVIÇO DE ENGENHARIA", "SERVICO DE ENGENHARIA", "ALMOXARIFADO",
         "SERVIÇOS DE ENGENHARIA CIVIL", "SERVICOS DE ENGENHARIA CIVIL", "ALMOXARIFADO VIRTUAL", "DIVULGAÇÃO DE PROPAGANDA INSTITUCIONAL",
         "DIVULGAÇÃO DE PROPAGANDA", "DIVULGACAO DE PROPAGANDA INSTITUCIONAL", "DIVULGACAO DE PROPAGANDA", "dessalinizadores", "sistemas de dessalinizadores",
-        "SISTEMA DE DESSANILIZADORES", "SISTEMA DE DESSALINIZADORES", "SISTEMAS DE DESSANILIZADORES", "SISTEMAS DE DESSALINIZADORES", "SUPLEMENTOS ALIMENTARES",
-        "SUPLEMENTO ALIMENTAR", " Recursos Google Workspace", " Recursos Microsoft 365", " Recursos Microsoft365", "SERVIÇOS DE VIGILÂNCIA",
+        "SISTEMA DE DESSANILIZADORES", "SISTEMA DE DESSALINIZADORES", "SISTEMAS DE DESSANILIZADORES", "SISTEMAS DE DESSALINIZADORES",
+        "Recursos Google Workspace", " Recursos Microsoft 365", " Recursos Microsoft365", "SERVIÇOS DE VIGILÂNCIA",
         "SERVICOS DE VIGILANCIA", "RECURSOS GOOGLE WORKSPACE FOR EDUCATION", "Softwares Educacionais", "SOFTWARES EDUCACIONAIS", "Serviços Vigilância Eletrônica", "SERVIÇOS DE VIGILANCIA ELETRONICA",
         "SERVICOS DE VIGILANCIA ELETRONICA",
-        "SERVIÇO DE VIGILÂNCIA", "SERVICO DE VIGILANCIA", "Materiais de OPME", "MATERIAIS DE OPME", "MATERIAL DE OPME", "Serviços Administrativos",
-        "SERVIÇOS ADMINISTRATIVOS", "SERVICOS ADMINISTRATIVOS", "SERVIÇO ADMINISTRATIVO", "SERVICO ADMINISTRATIVO", "AQUISIÇÃO DE LEITES ESPECIAIS",
-        "LEITES ESPECIAIS", "LEITE ESPECIAL", "LEITE ESPECIAIS", "ADMINISTRAÇÃO DA FOLHA", "ADMINISTRACAO DA FOLHA",
+        "SERVIÇO DE VIGILÂNCIA", "SERVICO DE VIGILANCIA", "Serviços Administrativos",
+        "SERVIÇOS ADMINISTRATIVOS", "SERVICOS ADMINISTRATIVOS", "SERVIÇO ADMINISTRATIVO", "SERVICO ADMINISTRATIVO",
+        "ADMINISTRAÇÃO DA FOLHA", "ADMINISTRACAO DA FOLHA",
         "FOLHA DE PAGAMENTO", "FOLHA DE PAGAMENTOS", "SERVIÇOS DE FOLHA DE PAGAMENTO", "SERVICOS DE FOLHA DE PAGAMENTO", "FROTA DE VEÍCULOS",
         "FROTA DE VEICULOS", "SISTEMA INTEGRADO DE PROTEÇÃO INTELIGENTE", "SISTEMA INTEGRADO DE PROTECAO INTELIGENTE", "higiene pessoal", "HIGIENE PESSOAL",
         "MATERIAL DE HIGIENE PESSOAL", "MATERIAIS DE HIGIENE PESSOAL", "MATERIAL DE HIGIENE", "MATERIAIS DE HIGIENE", "mobiliários", "MOBILIÁRIOS", "MOBILIARIOS",
@@ -75,7 +77,6 @@ class PNCPClient:
         "aquisição de câmeras", "AQUISIÇÃO DE CAMERAS", "AQUISIÇÃO DE CÂMERAS", "equipamentos de segurança", "EQUIPAMENTOS DE SEGURANÇA", "serviços de seguro predial",
         "SERVIÇOS DE SEGURO PREDIAL", "SERVICOS DE SEGURO PREDIAL", "ANIMAIS", "VEÍCULOS", "VEICULOS", "KIT ENXOVAL INFANTIL", "Veículo Automotor", "VEÍCULO AUTOMOTOR", "VEICULO AUTOMOTOR",
         "AGENCIAMENTO DE HOSPEDAGEM", "AGÊNCIA DE HOSPEDAGEM", "AGENCIA DE HOSPEDAGEM", "HOSPEDAGEM", "HOTELARIA", "SERVIÇOS DE HOTELARIA", "SERVICOS DE HOTELARIA", 
-        "DIETA ENTERAL", "DIETA PARENTERAL", "TERAPIA NUTRICIONAL", "DIETA ORAL", "DIETAS",
         "AQUISIÇÃO DE MATERIAL GRÁFICO", "AQUISICAO DE MATERIAL GRAFICO", "MATERIAL GRÁFICO", "MATERIAL GRAFICO", "AQUSIÇÃO DE MÓVEIS E MATERIAIS PERMANENTES",
         "APARELHOS CELULARES", "bomba Injetora de Contraste", "BOMBA INJETORA DE CONTRASTE", "BOMBA INJETORA DE CONTRASTES", "bombas de água e materiais hidráulicos",
         "BOMBAS DE ÁGUA E MATERIAIS HIDRÁULICOS", "BOMBAS DE AGUA E MATERIAIS HIDRAULICOS", "serviços de administração", "SERVIÇOS DE ADMINISTRAÇÃO", "SERVICOS DE ADMINISTRACAO",
@@ -84,16 +85,16 @@ class PNCPClient:
         "LOCACAO DE DECORACOES NATALINAS", "SERVIÇOS DE DECORAÇÃO NATALINA", "SERVICOS DE DECORACAO NATALINA", "sistema de climatização", "SISTEMA DE CLIMATIZAÇÃO", "SISTEMA DE CLIMATIZACAO",
         "Subestação Abrigada", "SUBESTAÇÃO ABRIGADA", "torre de controle de aeródromo", "TORRE DE CONTROLE DE AERÓDROMO", "Aquisição de aparelhos de ares-condicionados",
         "AQUISIÇÃO DE APARELHOS DE ARES-CONDICIONADOS", "Aquisição de Aparelhos de Ar Condicionado", "AQUISIÇÃO DE APARELHOS DE AR CONDICIONADO",
-        "MOTOBOMBAS CENTRIFUGA", "MOTOBOMBAS CENTRÍFUGA", "MOTOBOMBAS CENTRIFUGAS", "MOTOBOMBAS CENTRÍFUGAS", "matérias odontológicos", "MATERIAS ODONTOLOGICOS",
+        "MOTOBOMBAS CENTRIFUGA", "MOTOBOMBAS CENTRÍFUGA", "MOTOBOMBAS CENTRIFUGAS", "MOTOBOMBAS CENTRÍFUGAS",
         "ensaios geotécnicos e de controle tecnológico de concreto", "ENSAIOS GEOTÉCNICOS E DE CONTROLE TECNOLÓGICO DE CONCRETO", " funcionamento dos contêineres adaptados",
-        "FUNCIONAMENTO DOS CONTÊINERES ADAPTADOS", "FUNCIONAMENTO DOS CONTEINERES ADAPTADOS", "prótese dentária", " PRÓTESE DENTÁRIA", " PROTESE DENTARIA",
+        "FUNCIONAMENTO DOS CONTÊINERES ADAPTADOS", "FUNCIONAMENTO DOS CONTEINERES ADAPTADOS",
         "AQUISIÇÃO DE EQUIPAMENTOS DE ILUMINAÇÃO E SOM", "TEATRO", "atividades físicas, recreativas, esportivas e de reabilitação funcional", 
         "ATIVIDADES FÍSICAS, RECREATIVAS, ESPORTIVAS E DE REABILITAÇÃO FUNCIONAL", "ATIVIDADES FÍSICAS" , "ATIVIDADE FISICA", "manutenção veicular",
         "MANUTENÇÃO VEICULAR", "implementação da segurança orgânica", "IMPLEMENTAÇÃO DA SEGURANÇA ORGÂNICA", "IMPLEMENTACAO DA SEGURANCA ORGANICA",
         "manutenção e reparação de muro", "MANUTENÇÃO E REPARAÇÃO DE MURO", "MANUTENCAO E REPARACAO DE MURO", "prestação de serviços de recarga de oxigênio medicinal e ar medicinal comprimido",
         "PRESTAÇÃO DE SERVIÇOS DE RECARGA DE OXIGÊNIO MEDICINAL E AR MEDICINAL COMPRIMIDO", "PRESTACAO DE SERVICOS DE RECARGA DE OXIGENIO MEDICINAL",
         "manutenção preventiva e corretiva de elevadores", "MANUTENÇÃO PREVENTIVA E CORRETIVA DE ELEVADORES", "MANUTENCAO PREVENTIVA E CORRETIVA DE ELEVADORES",
-        "Aquisição de Equipamentos de Fisioterapia", "AQUISIÇÃO DE EQUIPAMENTOS DE FISIOTERAPIA", "SERVIÇO PROFISSIONAL POR PESSOA JURÍDICA ESPECIALIZADA NO ACOMPANHAMENTO DE ÍNDICES EM SAÚDE",
+        "SERVIÇO PROFISSIONAL POR PESSOA JURÍDICA ESPECIALIZADA NO ACOMPANHAMENTO DE ÍNDICES EM SAÚDE",
         "SERVIÇO PROFISSIONAL POR PESSOA JURIDICA ESPECIALIZADA", "caminhão pipa", "CAMINHÃO PIPA", "CAMINHAO PIPA",
         "CONSTRUÇÃO", "CONSTRUCAO", "OBRA", "OBRAS", "REFORMA", "REFORMAS", "PAVIMENTAÇÃO", "PAVIMENTACAO", 
         "DRENAGEM", "EDIFICAÇÃO", "EDIFICACAO", "CRECHE", "ESCOLA", "QUADRA POLIESPORTIVA", "ENGENHARIA", 
@@ -114,7 +115,7 @@ class PNCPClient:
         "SERVIÇOS DE MANUTENÇÃO DE ANTENA DE ALTA FREQUÊNCIA", "SERVICOS DE MANUTENCAO DE ANTENA DE ALTA FREQUENCIA",
         "VIDEOMONITORAMENTO", "COZINHA", "LOUSA", "LOUSAS", "PERSIANA", "PERSIANAS",
         "GENEROS ALIMENTICIOS", "GÊNEROS ALIMENTÍCIOS", "ALIMENTOS",
-        "TECNOLOGIA DA INFORMACAO", "TI", "SOFTWARE", "SOLUCAO DE TECNOLOGIA", "SOLUÇÃO DE TECNOLOGIA",
+        "TECNOLOGIA DA INFORMACAO", "SETOR DE TI", "AREA DE TI", "SERVICOS DE TI", "SOFTWARE", "SOLUCAO DE TECNOLOGIA", "SOLUÇÃO DE TECNOLOGIA",
         "SHOW", "ARTISTICA", "ARTÍSTICA", "EVENTO", "FESTA", "PALCO", "TENDA", "TENDAS", "LOCAÇÃO DE TENDA", "LOCAÇÃO DE TENDAS", "LOCACAO DE TENDA", "LOCACAO DE TENDAS",
         "EVENTOS", "SONORIZACAO", "SONORIZAÇÃO", "PAINEL DE LED", "PAINEL LED", "PAINEIS DE LED", "PAINÉIS DE LED",
         "CANCELAMENTO DO PREGAO", "CANCELAMENTO DO PREGÃO", "CANCELAMENTO DO EDITAL", "REVOGACAO", "REVOGAÇÃO",
@@ -245,6 +246,18 @@ class PNCPClient:
         "DISPONIBILIZAÇÃO DE EQUIPAMENTO", "DISPONIBILIZACAO DE EQUIPAMENTO",
         "CESSÃO DE EQUIPAMENTO", "CESSAO DE EQUIPAMENTO",
         
+        # MATERIAIS HOSPITALARES/LABORATORIAIS (Termos genéricos importantes)
+        "MATERIAL MEDICO HOSPITALAR", "MATERIAL MÉDICO HOSPITALAR", "MATERIAIS MEDICO HOSPITALARES",
+        "MATERIAL HOSPITALAR", "MATERIAIS HOSPITALARES", "PRODUTOS HOSPITALARES",
+        "MATERIAL LABORATORIAL", "MATERIAIS LABORATORIAIS", "PRODUTOS LABORATORIAIS",
+        "INSUMOS HOSPITALARES", "INSUMOS LABORATORIAIS", "INSUMO HOSPITALAR", "INSUMO LABORATORIAL",
+        
+        # EQUIPAMENTOS MÉDICO-HOSPITALARES (várias formas de escrita)
+        "EQUIPAMENTO MEDICO HOSPITALAR", "EQUIPAMENTOS MEDICO HOSPITALARES",
+        "EQUIPAMENTO MEDICO-HOSPITALAR", "EQUIPAMENTOS MEDICO-HOSPITALARES",
+        "EQUIPAMENTO HOSPITALAR", "EQUIPAMENTOS HOSPITALARES",
+        "EQUIPAMENTO MEDICO", "EQUIPAMENTOS MEDICO",
+        
         # Equipamentos ESPECÍFICOS (não apenas a área)
         "EQUIPAMENTO DE HEMATOLOGIA", "EQUIPAMENTO DE BIOQUIMICA", "EQUIPAMENTO DE COAGULACAO",
         "EQUIPAMENTO DE IMUNOLOGIA", "EQUIPAMENTO DE IONOGRAMA", "EQUIPAMENTO DE GASOMETRIA",
@@ -267,6 +280,7 @@ class PNCPClient:
         "REAGENTES LABORATORIAIS", "REAGENTE LABORATORIAL",
         "INSUMOS LABORATORIAIS", "INSUMO LABORATORIAL",
         "REAGENTES PARA LABORATORIO", "REAGENTES DE LABORATORIO",
+        "REAGENTE", "REAGENTES",
         
         # Análises Clínicas (termos compostos mais específicos)
         "LABORATORIO DE ANALISES CLINICAS", "LABORATÓRIO DE ANÁLISES CLÍNICAS",
@@ -320,12 +334,13 @@ class PNCPClient:
         "INSUMOS DE PETREO", "PAVIMENTACAO CAUQ", "CAUQ", "CBUQ", "ASFALTO", "ASFALTICO",
         "LOCACAO DE VIATURA", "LOCAÇÃO DE VIATURA", "VIATURA POLICIAL",
         "AUDITORIA INDEPENDENTE", "AUDITORIA DE FATURAMENTO", "AUDITORIA CONTRATUAL",
+        "FRACASSADO", "ITENS FRACASSADOS", # Adicionados para filtrar avisos de itens fracassados
         "RECARGA DE OXIGENIO", "OXIGENIO MEDICINAL", "CESSAO DE CILINDRO", "COMODATO DE CILINDROS",
         "TELECOMUNICACOES", "TELECOMUNICAÇÕES", "REDE DE DADOS", "REDE WIFI", "WI-FI", "WIFI",
         "MATERIAL PARA EMBALAGEM", "MATERIAIS PARA EMBALAGEM", "CONDICIONAMENTO E EMBALAGEM",
         "VALVULA", "VALVULAS", "CONEXAO", "CONEXOES", "TRATAMENTO DE AGUA", "SANEAMENTO",
-        
-        # Novos filtros solicitados (Atualização Recente)
+
+        # Novos filtros solicitados (Atualização Recente - Restaurados)
         "LAVANDERIA", "LAVAGEM DE ROUPA", "HIGIENIZACAO DE TEXTEIS",
         "SOFTWARE", "SOFTWARES", "SISTEMA DE GESTAO", "SIAFIC", "LICENCA DE USO",
         "MATERIAL PERSONALIZADO", "BRINDES PERSONALIZADOS",
@@ -333,25 +348,111 @@ class PNCPClient:
         "ARES CONDICIONADOS", "ARES-CONDICIONADOS", "APARELHO DE AR",
         "PISCINA", "ESPELHO D'AGUA", "ESPELHO D AGUA", "LIMPEZA DE PISCINA",
         "MEDICINA DO TRABALHO", "EXAMES OCUPACIONAIS", "SAUDE OCUPACIONAL", "ASO",
-        
-        # Novos filtros (Rodada 2)
+
+        # Novos filtros (Rodada 2 - Restaurados)
         "BEBEDOURO", "BEBEDOUROS", "ESTACOES DE HIDRATACAO", "ESTAÇÕES DE HIDRATAÇÃO", "HIDRATACAO INTELIGENTE",
         "SETOR DE ENDEMIAS", "CONTROLE DE ENDEMIAS", "INSUMOS PARA ENDEMIAS",
         "INSUMOS PETREOS", "INSUMOS PÉTREOS", "PETREOS", "PÉTREOS",
         "MATERIAIS DE CONSUMO DIVERSOS",
-        "MATERIAIS PERSONALIZADOS"
+        "MATERIAIS PERSONALIZADOS",
+
+        # Novos filtros (Rodada 3 - TI, Consultoria, Informática - Restaurados)
+        "EQUIPAMENTOS DE INFORMATICA", "EQUIPAMENTOS DE INFORMÁTICA", "EQUIPAMENTO DE INFORMATICA",
+        "FORNECIMENTO DE EQUIPAMENTOS DE INFORMATICA", "FORNECIMENTO DE EQUIPAMENTOS DE INFORMÁTICA",
+        "CONSULTORIA", "CONSULTORIA ESPECIALIZADA", "CONSULTORIA EM TI", "CONSULTORIA EM TECNOLOGIA",
+        "GOVERNANCA DE TI", "GOVERNANÇA DE TI", "COBIT", "FRAMEWORK", "ITIL",
+        "PUBLICIDADE", "MARKETING", "PROPAGANDA", "AGENCIA DE PUBLICIDADE", "AGÊNCIA DE PUBLICIDADE",
+        "COMUNICACAO SOCIAL", "COMUNICAÇÃO SOCIAL", "ASSESSORIA DE IMPRENSA",
+        "SUBCOMISSAO TECNICA", "SUBCOMISSÃO TÉCNICA", "JULGAMENTO DE PROPOSTAS",
+        "CLINICA MEDICA", "CLÍNICA MÉDICA", "CLINICAS MEDICAS", "CLÍNICAS MÉDICAS",
+        "CIRURGIA", "CIRURGIAS", "CIRURGICO", "CIRÚRGICO", "OFTALMOLOGICA", "OFTALMOLÓGICA",
+        "OFTALMOLOGIA", "OFTALMOLOGICO", "OFTALMOLÓGICO",
+        "MONITOR", "MONITORES", "TECLADO", "MOUSE", "SERVIDOR", "SERVIDORES",
+        "SWITCH", "ROTEADOR", "ROTEADORES", "FIREWALL", "STORAGE", "BACKUP DE DADOS",
+        "NOBREAK", "NO-BREAK", "ESTABILIZADOR",
+        "SISTEMA DE INFORMACAO", "SISTEMA DE INFORMAÇÃO", "SISTEMAS DE INFORMACAO",
+        "PLATAFORMA DIGITAL", "PLATAFORMA DE GESTAO", "PLATAFORMA DE GESTÃO",
+        "CERTIFICADO DIGITAL", "CERTIFICADOS DIGITAIS", "ASSINATURA DIGITAL",
+        "GESTAO DE PROCESSOS", "GESTÃO DE PROCESSOS", "BPM", "BPMN",
+
+        # Novos filtros (Rodada 4 - Microbiologia/Antibiograma - fora do escopo Medcal - Restaurados)
+        "ANTIBIOGRAMA", "ANTIFUNGIGRAMA", "ANTIBIOGRAMA/ANTIFUNGIGRAMA",
+        "IDENTIFICACAO BACTERIANA", "IDENTIFICAÇÃO BACTERIANA", "IDENTIFICACAO FUNGICA", "IDENTIFICAÇÃO FÚNGICA",
+        "HEMOCULTURA", "FRASCOS PARA HEMOCULTURA", "FRASCO PARA HEMOCULTURA",
+        "MICROBIOLOGIA", "MICROBIOLOGICO", "MICROBIOLÓGICO",
+
+        # Novos filtros (Rodada 5 - Serviços domiciliares, Odonto, TI, Veículos - Restaurados)
+        "ASSISTENCIA DOMICILIAR", "ASSISTÊNCIA DOMICILIAR", "REGIME DOMICILIAR",
+        "HOME CARE", "ATENDIMENTO DOMICILIAR", "EQUIPE MULTIPROFISSIONAL",
+        "INSUMOS ODONTOLOGICOS", "INSUMOS ODONTOLÓGICOS", "ODONTOLOGICO", "ODONTOLÓGICO",
+        "ODONTOLOGIA", "DENTARIO", "DENTÁRIO", "DENTAL", "DENTISTA",
+        "PARQUE TECNOLOGICO", "PARQUE TECNOLÓGICO", "RENOVACAO DO PARQUE", "RENOVAÇÃO DO PARQUE",
+        "OBSOLESCENCIA", "OBSOLESCÊNCIA", "EQUIPAMENTOS OBSOLETOS",
+        "CAMINHAO", "CAMINHÃO", "PRANCHA", "CAMINHAO TIPO PRANCHA",
+        "ALUGUEL DE CAMINHAO", "ALUGUEL DE CAMINHÃO",
+        "POWER BI", "POWERBI", "LICENCA DE ACESSO", "LICENÇA DE ACESSO",
+        "SOLUCAO TECNOLOGICA", "SOLUÇÃO TECNOLÓGICA", "PLATAFORMA POWER BI",
+
+        # Novos filtros (Rodada 6 - Ambulâncias - Restaurados)
+        "AMBULANCIA", "AMBULÂNCIA", "AMBULANCIAS", "AMBULÂNCIAS",
+        "LOCACAO DE AMBULANCIA", "LOCAÇÃO DE AMBULÂNCIA",
+        "LOCACAO DE AMBULANCIAS", "LOCAÇÃO DE AMBULÂNCIAS",
+        "ALUGUEL DE AMBULANCIA", "ALUGUEL DE AMBULÂNCIA",
+        "SERVICOS DE AMBULANCIA", "SERVIÇOS DE AMBULÂNCIA",
+        "TRANSPORTE DE PACIENTES", "REMOÇÃO DE PACIENTES",
+
+        # Novos filtros (Rodada 7 - Veículos automotivos - Restaurados)
+        "VEICULO AUTOMOTIVO", "VEÍCULO AUTOMOTIVO", "VEICULOS AUTOMOTIVOS", "VEÍCULOS AUTOMOTIVOS",
+        "SEDAN", "HATCH", "SUV", "PICKUP", "PICK-UP",
+        "ZERO QUILOMETRO", "ZERO QUILÔMETRO", "0KM",
+        "HIBRIDO", "HÍBRIDO", "PLUG-IN", "ELETRICO", "ELÉTRICO",
+        "CONCESSIONARIA", "CONCESSIONÁRIA", "CONCESSIONARIAS", "CONCESSIONÁRIAS",
+        "ANO DE FABRICACAO", "ANO DE FABRICAÇÃO",
+
+        # Novos filtros (Rodada 8 - Máquinas agrícolas - Restaurados)
+        "TRATOR", "TRATORES", "MICROTRATOR", "MICROTRATORES",
+        "TRATOR AGRICOLA", "TRATORES AGRICOLAS", "MICROTRATOR AGRICOLA",
+        "ENXADA ROTATIVA", "CARRETA AGRICOLA", "CARRETAS AGRICOLAS",
+        "ENCANTEIRADOR", "ENCANTEIRADORES", "PLANTADEIRA", "PLANTADEIRAS",
+        "ROCADEIRA", "ROÇADEIRA", "ROCADEIRAS", "ROÇADEIRAS",
+        "ARADO", "ARADOS", "AIVECA", "IMPLEMENTO AGRICOLA", "IMPLEMENTOS AGRICOLAS",
+        "EQUIPAMENTO AGRICOLA", "EQUIPAMENTOS AGRICOLAS",
+
+        # Telefonia e Internet (Adicionados)
+        "TELEFONIA", "TELEFONE", "CENTRAL TELEFONICA", "PABX", "RAMAIS", "VOIP", "INTERNET", "LINK DEDICADO", "FIBRA OTICA", "FIBRA OPTICA", "WIFI", "WI-FI",
+
+        # Refrigeração (bloqueia manutenção de câmaras frias / refrigeração genérica)
+        "REFRIGERACAO", "REFRIGERAÇÃO", "CAMARA FRIA", "CAMARA DE REFRIGERACAO", "CAMARA DE REFRIGERAÇÃO", "REFRIGERAÇÃO INDUSTRIAL", "REFRIGERACAO INDUSTRIAL"
     ]
     TERMOS_NEGATIVOS_PADRAO = TERMOS_NEGATIVOS_PADRAO + TERMOS_NEGATIVOS_EXTRA
+    
+    # Cache de termos negativos como SET para busca O(1)
+    _TERMOS_NEGATIVOS_SET = None
 
+    # Contexto mínimo para aceitar manutenção/serviços (evita falsos positivos genéricos)
+    CONTEXTO_LABORATORIAL = [
+        "LABORATORIO", "LABORATÓRIO", "LABORATORIAL", "ANALISE", "ANALISES", "ANÁLISE", "ANÁLISES",
+        "CLINICA", "CLÍNICA", "HOSPITALAR", "HOSPITALARES", "HEMATOLOGIA", "BIOQUIMICA", "COAGULACAO",
+        "IMUNO", "GASOMETRIA", "POCT", "REAGENTE", "INSUMO"
+    ]
 
     def __init__(self):
         self.session = requests.Session()
-        adapter = requests.adapters.HTTPAdapter(max_retries=3)
+        # Pool de conexões otimizado para 12 threads paralelas
+        adapter = requests.adapters.HTTPAdapter(
+            max_retries=3,
+            pool_connections=20,
+            pool_maxsize=20
+        )
         self.session.mount('https://', adapter)
         self.session.mount('http://', adapter)
         self.headers = {
             "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/120.0.0.0 Safari/537.36"
         }
+        
+        # Inicializa cache de termos negativos (uma vez só)
+        if PNCPClient._TERMOS_NEGATIVOS_SET is None:
+            PNCPClient._TERMOS_NEGATIVOS_SET = set(t.upper() for t in self.TERMOS_NEGATIVOS_PADRAO)
 
     def calcular_dias(self, data_iso):
         """Retorna número de dias entre HOJE e a data (só a parte AAAA-MM-DD)."""
@@ -364,6 +465,30 @@ class PNCPClient:
             return (dt - hoje).days
         except Exception:
             return -999
+
+    def avaliar_objeto(self, obj_upper, termos_positivos_upper, termos_prioritarios_upper):
+        """
+        Decide se o objeto passa pelo filtro e explica o motivo.
+        - Prioriza termos prioritários.
+        - Para termos positivos genéricos (ex.: manutenção), exige contexto laboratorial/hospitalar.
+        """
+        termos_prio = [t for t in termos_prioritarios_upper if t in obj_upper]
+        termos_pos = [t for t in termos_positivos_upper if t in obj_upper] if termos_positivos_upper else []
+
+        if termos_prio:
+            return True, f"Termos prioritários: {', '.join(termos_prio[:3])}", termos_prio
+
+        if not termos_pos:
+            return False, "Sem termos positivos", []
+
+        tem_contexto_lab = any(ctx in obj_upper for ctx in self.CONTEXTO_LABORATORIAL)
+        if tem_contexto_lab or len(termos_pos) >= 2:
+            motivo = f"Termos positivos: {', '.join(termos_pos[:3])}"
+            if tem_contexto_lab:
+                motivo += " + contexto laboratorial"
+            return True, motivo, termos_pos
+
+        return False, "Sem contexto laboratorial/hospitalar", termos_pos
 
     def buscar_oportunidades(self, dias_busca=30, estados=['RN', 'PB', 'PE', 'AL'], termos_positivos=[], termos_negativos=None, apenas_abertas=True):
         """
@@ -417,108 +542,129 @@ class PNCPClient:
         print(f"Filtro apenas abertas: {apenas_abertas}")
         print(f"{'='*80}\n")
 
-        total_api = 0
-
-        # 6=Pregão Eletrônico, 8=Dispensa de Licitação/Compra Direta, 12=Dispensa Emergencial
-        for modalidade in [6, 8, 12]:
-            modalidade_nome = {6: "Pregão Eletrônico", 8: "Dispensa/Compra Direta", 12: "Dispensa Emergencial"}.get(modalidade)
-
-            for uf in estados:
-                print(f"\n[PNCP] Buscando {modalidade_nome} em {uf}...")
-
-                # Busca paginada com limite
-                tamanho_pagina = 50  # API retorna erro 400 acima de 50
-                for pagina in range(1, self.MAX_PAGINAS + 1):
-                    params = {
-                        "dataInicial": data_inicial,
-                        "dataFinal": data_final,
-                        "codigoModalidadeContratacao": modalidade,
-                        "uf": uf,
-                        "pagina": str(pagina),
-                        "tamanhoPagina": str(tamanho_pagina)
-                    }
-                    if apenas_abertas and data_inicial_enc and data_final_enc:
-                        # Alguns clusters aceitam filtro direto por encerramento de proposta
-                        params["dataInicialEncerramentoProposta"] = data_inicial_enc
-                        params["dataFinalEncerramentoProposta"] = data_final_enc
-
-                    try:
-                        # Aumentado timeout para 30s e usando session com retry
+        resultados = []
+        resultados_lock = Lock()
+        total_api = [0]  # Lista para permitir modificação em threads
+        
+        # CORREÇÃO: Passar datas ISO como parâmetro para evitar problema de escopo em threads
+        datas_iso = {
+            'data_inicial_iso': data_inicial_iso,
+            'data_final_iso': data_final_iso
+        }
+        
+        def buscar_modalidade_uf(modalidade, uf, params_base, datas_fallback):
+            """Busca uma combinação modalidade/UF (executada em paralelo)"""
+            modalidade_nome = {6: "Pregão", 8: "Dispensa", 12: "Emergencial"}.get(modalidade)
+            resultados_local = []
+            count_api = 0
+            
+            tamanho_pagina = 50
+            for pagina in range(1, self.MAX_PAGINAS + 1):
+                params = params_base.copy()
+                params.update({
+                    "codigoModalidadeContratacao": modalidade,
+                    "uf": uf,
+                    "pagina": str(pagina),
+                    "tamanhoPagina": str(tamanho_pagina)
+                })
+                
+                try:
+                    resp = self.session.get(self.BASE_URL, params=params, headers=self.headers, timeout=30)
+                    
+                    # Fallback formato ISO (usando parâmetro local, não closure)
+                    if resp.status_code == 400:
+                        params["dataInicial"] = datas_fallback['data_inicial_iso']
+                        params["dataFinal"] = datas_fallback['data_final_iso']
                         resp = self.session.get(self.BASE_URL, params=params, headers=self.headers, timeout=30)
-
-                        # Fallback: alguns clusters do PNCP exigem data no formato AAAA-MM-DD
-                        if resp.status_code == 400:
-                            params_iso = params.copy()
-                            params_iso["dataInicial"] = data_inicial_iso
-                            params_iso["dataFinal"] = data_final_iso
-                            resp = self.session.get(self.BASE_URL, params=params_iso, headers=self.headers, timeout=30)
-
-                        if resp.status_code != 200:
-                            print(f"  [WARN] Erro HTTP {resp.status_code} - Pagina {pagina}")
-                            # Não quebra o loop, tenta a próxima página ou modalidade
+                    
+                    if resp.status_code != 200:
+                        continue
+                    
+                    data = resp.json().get('data', [])
+                    count_api += len(data)
+                    
+                    if not data:
+                        break
+                    
+                    for item in data:
+                        obj_raw = item.get('objetoCompra') or item.get('objeto') or ""
+                        obj = obj_raw.upper()
+                        
+                        if not obj:
                             continue
 
-                        data = resp.json().get('data', [])
-                        total_api += len(data)
-
-                        if not data:
-                            print(f"  [INFO] Pagina {pagina} vazia - fim da busca para {uf}")
-                            break
-
-                        print(f"  [OK] Pagina {pagina}: {len(data)} licitacoes encontradas")
+                        # Filtro Positivo + Contexto (evita falsos positivos de manutenção genérica)
+                        aprovado, motivo_aprov, termos_hit = self.avaliar_objeto(obj, termos_positivos_upper, termos_prioritarios_upper)
+                        if not aprovado:
+                            continue
                         
-                        for item in data:
-
-                            # 1) Campo do objeto na API de CONSULTA é "objetoCompra" ou "objeto"
-                            obj_raw = item.get('objetoCompra') or item.get('objeto') or ""
-                            obj = obj_raw.upper()
-                            
-                            if not obj:
-                                continue
-
-                            # 2) Filtro de Termos Prioritários (reduz ruído) ou Positivos
-                            tem_prio = any(t in obj for t in termos_prioritarios_upper)
-                            tem_pos = any(t in obj for t in termos_positivos_upper) if termos_positivos_upper else False
-                            if not tem_prio and not tem_pos:
-                                continue
-
-                            # 3) Filtro de Termos Negativos
-                            if any(t in obj for t in termos_negativos_upper):
-                                continue
-                            
-                            # 4) Filtro de Data (Encerramento Proposta)
-                            # Bloqueia se tem data e já encerrou.
-                            data_encerramento = item.get("dataEncerramentoProposta")
-                            if not data_encerramento:
-                                continue  # Sem data = descarta (não dá para participar)
-                            dias_restantes = -999  # Valor padrão para itens sem data
-
-                            if data_encerramento:
-                                dias_restantes = self.calcular_dias(data_encerramento)
-                                if dias_restantes < 0:
-                                    continue  # fora do prazo
-
-                            # Adiciona dias restantes ao objeto parseado
-                            parsed = self._parse_licitacao(item)
-                            parsed['dias_restantes'] = dias_restantes
-                            resultados.append(parsed)
-                            
-                    except requests.exceptions.ReadTimeout:
-                        print(f"  [FAIL] Timeout na pagina {pagina} de {uf}. Tentando proxima...")
-                        continue
-                    except Exception as e:
-                        print(f"  [FAIL] ERRO na pagina {pagina}: {e}")
-                        continue
-
-                    # Se veio menos que o tamanho da página, acabou a lista
+                        # Filtro Negativo OTIMIZADO: verifica cada termo
+                        bloqueado = False
+                        for t in termos_negativos_upper:
+                            if t in obj:
+                                bloqueado = True
+                                break
+                        if bloqueado:
+                            continue
+                        
+                        # Filtro Data
+                        data_encerramento = item.get("dataEncerramentoProposta")
+                        if not data_encerramento:
+                            continue
+                        
+                        dias_restantes = self.calcular_dias(data_encerramento)
+                        if dias_restantes < 0:
+                            continue
+                        
+                        parsed = self._parse_licitacao(item)
+                        parsed['dias_restantes'] = dias_restantes
+                        parsed['motivo_aprovacao'] = motivo_aprov
+                        parsed['termos_encontrados'] = termos_hit[:5]
+                        parsed['fonte'] = "PNCP"
+                        resultados_local.append(parsed)
+                    
                     if len(data) < tamanho_pagina:
                         break
-
-                    time.sleep(0.05)
+                        
+                except requests.exceptions.ReadTimeout:
+                    continue
+                except Exception as e:
+                    print(f"[PNCP] Erro {modalidade_nome}/{uf} pag {pagina}: {e}")
+                    continue
+            
+            # Thread-safe: adiciona resultados
+            with resultados_lock:
+                resultados.extend(resultados_local)
+                total_api[0] += count_api
+            
+            print(f"  ✓ {modalidade_nome}/{uf}: {len(resultados_local)} aprovados de {count_api}")
+            return len(resultados_local)
+        
+        # Parâmetros base compartilhados
+        params_base = {
+            "dataInicial": data_inicial,
+            "dataFinal": data_final,
+        }
+        if apenas_abertas and data_inicial_enc and data_final_enc:
+            params_base["dataInicialEncerramentoProposta"] = data_inicial_enc
+            params_base["dataFinalEncerramentoProposta"] = data_final_enc
+        
+        # Gera todas as combinações modalidade/estado
+        combinacoes = [(m, uf) for m in [6, 8, 12] for uf in estados]
+        
+        print(f"[PNCP] Buscando {len(combinacoes)} combinações em paralelo...")
+        
+        # EXECUÇÃO PARALELA (12 threads = 3 modalidades × 4 estados)
+        with concurrent.futures.ThreadPoolExecutor(max_workers=12) as executor:
+            futures = [
+                executor.submit(buscar_modalidade_uf, m, uf, params_base, datas_iso) 
+                for m, uf in combinacoes
+            ]
+            concurrent.futures.wait(futures)
 
         print(f"\n{'='*80}")
-        print("[PNCP] RESUMO DA BUSCA")
-        print(f"Total retornado pela API: {total_api}")
+        print("[PNCP] RESUMO DA BUSCA (PARALELA)")
+        print(f"Total retornado pela API: {total_api[0]}")
         print(f"Total APROVADO (após filtros): {len(resultados)}")
         print(f"{'='*80}\n")
 

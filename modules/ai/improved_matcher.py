@@ -3,7 +3,9 @@ import os
 import unicodedata
 import numpy as np
 import google.generativeai as genai
-from .ai_config import configure_genai
+import time
+import random
+from .ai_config import configure_genai, get_model, get_openrouter_api_key, get_gemini_api_key
 from sqlalchemy.orm import Session
 from modules.database.database import Produto, get_session # Reusing existing models
 
@@ -42,12 +44,33 @@ def tem_contexto_laboratorial(texto: str) -> bool:
     return any(termo in texto_norm for termo in CONTEXTO_LABORATORIAL)
 
 class SemanticMatcher:
+    """Singleton para evitar recarregar embeddings a cada instância"""
+    _instance = None
+    _initialized = False
+    
+    def __new__(cls):
+        if cls._instance is None:
+            cls._instance = super().__new__(cls)
+        return cls._instance
+    
     def __init__(self):
+        # Evita reinicialização se já foi inicializado
+        if SemanticMatcher._initialized:
+            return
+        
         configure_genai()
         self.cache = self._load_cache()
         self.products = []
         self.product_embeddings = []
+        self._products_loaded = False
+        SemanticMatcher._initialized = True
+    
+    def _ensure_products_loaded(self):
+        """Carrega produtos apenas quando necessário (lazy loading)"""
+        if self._products_loaded:
+            return
         self._refresh_product_embeddings()
+        self._products_loaded = True
 
     def _load_cache(self):
         if os.path.exists(CACHE_FILE):
@@ -104,10 +127,10 @@ class SemanticMatcher:
         """
         Finds products that match the object description semantically.
         Returns list of (Produto, score).
-        
-        IMPORTANTE: Só retorna matches se o texto tiver contexto laboratorial.
-        Threshold aumentado de 0.6 para 0.75 para maior precisão.
         """
+        # Lazy loading de produtos
+        self._ensure_products_loaded()
+        
         if not self.product_embeddings:
             return []
         
@@ -134,3 +157,46 @@ class SemanticMatcher:
         # Sort by score desc
         matches.sort(key=lambda x: x[1], reverse=True)
         return matches
+
+    def verify_match(self, item_licitacao: str, produto_catalogo: str) -> bool:
+        """
+        Usa o LLM para verificar se o item da licitação é tecnicamente compatível com o produto do catálogo.
+        Retorna True/False.
+        """
+        max_retries = 3
+        base_delay = 1
+        
+        prompt = f"""Atue como um Especialista em Licitações de Produtos Laboratoriais e Hospitalares.
+
+Verifique se o ITEM DA LICITAÇÃO é tecnicamente compatível ou equivalente ao MEU PRODUTO.
+
+ITEM DA LICITAÇÃO: "{item_licitacao}"
+MEU PRODUTO: "{produto_catalogo}"
+
+Regras:
+1. Considere sinônimos técnicos (ex: "Hemograma" = "Hematologia").
+2. Se o item for genérico (ex: "Material de Limpeza") e meu produto for específico (ex: "Detergente Enzimático"), responda NÃO (falso positivo).
+3. Se o item for equipamento e meu produto for reagente (ou vice-versa), responda NÃO.
+4. Responda APENAS "SIM" ou "NAO".
+"""
+        
+        for attempt in range(max_retries):
+            try:
+                # Usa modelo unificado (OpenRouter primeiro, Gemini fallback)
+                model = get_model(temperature=0.1)
+                response = model.generate_content(prompt)
+                resposta = response.text.strip().upper()
+                
+                return "SIM" in resposta
+            except Exception as e:
+                error_str = str(e)
+                if "429" in error_str or "Resource exhausted" in error_str:
+                    delay = base_delay * (2 ** attempt) + random.uniform(0, 1)
+                    print(f"⚠️ Rate limit. Tentativa {attempt+1}/{max_retries}. Aguardando {delay:.1f}s...")
+                    time.sleep(delay)
+                else:
+                    print(f"Erro na verificação LLM: {e}")
+                    return False
+        
+        print(f"❌ Falha na verificação LLM após {max_retries} tentativas.")
+        return False

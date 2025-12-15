@@ -26,6 +26,8 @@ from modules.utils.cnae_data import get_keywords_by_cnae
 from modules.ai.ai_config import configure_genai
 from modules.distance_calculator import get_road_distance # Importa calculador de distância
 from modules.core.search_engine import SearchEngine
+from modules.core.background_search import background_manager  # Busca em background
+from modules.core.deep_analyzer import deep_analyzer  # Análise profunda de licitações
 
 # Inicializa Banco
 init_db()
@@ -89,6 +91,9 @@ def best_match_against_keywords(texto_item: str, keywords, nome_produto_catalogo
         "HEMATOLOGIA", "BIOQUIMICA", "COAGULACAO", "COAGULAÇÃO", "IMUNOLOGIA", "IONOGRAMA",
         "GASOMETRIA", "POCT", "URINALISE", "URINA", "HEMOGRAMA", "LABORATORIO", "LABORATÓRIO",
         "LABORATORIAL", "ANALISE CLINICA", "ANÁLISE CLÍNICA", "ANALISES CLINICAS", "ANÁLISES CLÍNICAS",
+        "CURVA GLICEMICA", "GTT", "GTC", "TOLERANCIA GLICOSE", "DOSAGEM",
+        "AMILASE", "ALBUMINA", "BILIRRUBINA", "CALCIO", "FERRO", "URICO", "ÁCIDO ÚRICO", "ACIDO URICO",
+        "CLORETO", "COLESTEROL", "HDL", "LDL",
         # Equipamentos
         "ANALISADOR", "EQUIPAMENTO", "CENTRIFUGA", "CENTRÍFUGA", "MICROSCOPIO", "MICROSCÓPIO",
         "AUTOCLAVE", "COAGULOMETRO", "COAGULÔMETRO", "HOMOGENEIZADOR", "AGITADOR",
@@ -198,9 +203,41 @@ with st.sidebar:
         </div>
     """, unsafe_allow_html=True)
     
+    # === STATUS DE BUSCA EM BACKGROUND ===
+    search_status = background_manager.get_current_status()
+    if search_status['status'] == 'running':
+        elapsed = search_status.get('elapsed_seconds', 0)
+        mins = elapsed // 60
+        secs = elapsed % 60
+        st.markdown(f"""
+            <div style="background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); 
+                        padding: 10px; border-radius: 8px; margin-bottom: 12px; text-align: center;">
+                <div style="font-size: 20px; margin-bottom: 4px;">🔄</div>
+                <div style="font-size: 11px; color: white; font-weight: 500;">Buscando...</div>
+                <div style="font-size: 9px; color: rgba(255,255,255,0.7);">{mins}m {secs}s</div>
+            </div>
+        """, unsafe_allow_html=True)
+        
+        # Botão de refresh manual (evita loop infinito de st.rerun)
+        if st.button("🔄", key="sidebar_refresh", help="Atualizar status"):
+            st.rerun()
+        
+    elif search_status['status'] == 'completed' and search_status.get('finished_at'):
+        # Mostra notificação de conclusão por 60 segundos
+        finished = search_status['finished_at']
+        if isinstance(finished, datetime) and (datetime.now() - finished).seconds < 60:
+            st.markdown("""
+                <div style="background: linear-gradient(135deg, #11998e 0%, #38ef7d 100%); 
+                            padding: 10px; border-radius: 8px; margin-bottom: 12px; text-align: center;">
+                    <div style="font-size: 20px; margin-bottom: 4px;">✅</div>
+                    <div style="font-size: 11px; color: white; font-weight: 500;">Busca Concluída!</div>
+                    <div style="font-size: 9px; color: rgba(255,255,255,0.7);">{} novas</div>
+                </div>
+            """.format(search_status.get('total_novos', 0)), unsafe_allow_html=True)
+    
     page = st.radio(
         "Navegação Principal",
-        ["📊 Dashboard", "🔍 Buscar", "🧠 Análise IA", "📦 Catálogo", "💰 Financeiro", "⚙️ Config"],
+        ["📊 Dashboard", "🔍 Buscar", "🎯 Preparar", "🧠 Análise IA", "📦 Catálogo", "💰 Financeiro", "⚙️ Config"],
         label_visibility="collapsed"
     )
     
@@ -209,7 +246,7 @@ with st.sidebar:
     
     st.markdown("""
         <div style="text-align: center; padding: 16px 0; margin-top: auto;">
-            <div style="font-size: 10px; color: rgba(255,255,255,0.3);">v2.0 • 2025</div>
+            <div style="font-size: 10px; color: rgba(255,255,255,0.3);">v2.2 • 2025</div>
         </div>
     """, unsafe_allow_html=True)
 
@@ -217,6 +254,7 @@ with st.sidebar:
 page_map = {
     "📊 Dashboard": "Dashboard",
     "🔍 Buscar": "Buscar Licitações",
+    "🎯 Preparar": "Preparar Competição",
     "🧠 Análise IA": "🧠 Análise de IA",
     "📦 Catálogo": "Catálogo",
     "💰 Financeiro": "💰 Gestão Financeira",
@@ -444,11 +482,151 @@ def filtrar_itens_negativos(itens_api, termos_negativos):
     return itens_validos
 
 
-def processar_resultados(resultados_raw):
+def enviar_notificacao_scraper(resultados, fonte_nome):
+    """Envia notificação WhatsApp para licitações encontradas em scrapers individuais"""
+    if not resultados:
+        return
+    
+    try:
+        session = get_session()
+        config_contacts = session.query(Configuracao).filter_by(chave='whatsapp_contacts').first()
+        
+        if not config_contacts or not config_contacts.valor:
+            session.close()
+            return
+        
+        import json
+        import re
+        try:
+            contacts_list = json.loads(config_contacts.valor)
+        except:
+            session.close()
+            return
+        
+        if not contacts_list:
+            session.close()
+            return
+        
+        # Monta mensagem para cada licitação (limita a 5 para evitar spam e erro 503)
+        data_hoje = datetime.now().strftime('%d/%m/%Y')
+        
+        for lic in resultados[:5]:
+            orgao = lic.get('orgao', 'Órgão não informado')
+            modalidade = lic.get('modalidade', '')
+            objeto_raw = lic.get('objeto', '')
+            link = lic.get('link', '')
+            
+            # Remove prefixos de IA se existirem
+            objeto = objeto_raw
+            if '[IA]' in objeto:
+                objeto = re.sub(r'\[IA\][^\n]*\n?', '', objeto)
+            
+            # Extrai tipo e número do pregão/edital
+            tipo_licitacao = ""
+            num_edital = ""
+            
+            # Busca padrões como "PREGÃO ELETRÔNICO" ou "PE-040/2025" ou "PE nº 040/2025"
+            texto_busca = (objeto + " " + modalidade).upper()
+            # Normaliza acentos para facilitar busca
+            texto_busca_norm = texto_busca.replace('Ã', 'A').replace('Ô', 'O').replace('Ê', 'E').replace('Í', 'I').replace('Ó', 'O')
+            
+            # Tipo de licitação - ordem de prioridade
+            if "PREGAO ELETRONICO" in texto_busca_norm or "PE-" in texto_busca_norm or "PE " in texto_busca_norm:
+                tipo_licitacao = "Pregão Eletrônico"
+            elif "PREGAO PRESENCIAL" in texto_busca_norm or "PP-" in texto_busca_norm or "PP " in texto_busca_norm:
+                tipo_licitacao = "Pregão Presencial"
+            elif "DISPENSA ELETRONICA" in texto_busca_norm:
+                tipo_licitacao = "Dispensa Eletrônica"
+            elif "DISPENSA" in texto_busca_norm:
+                tipo_licitacao = "Dispensa"
+            elif "CHAMADA PUBLICA" in texto_busca_norm or "CHAMAMENTO" in texto_busca_norm or "CREDENCIAMENTO" in texto_busca_norm:
+                tipo_licitacao = "Chamada Pública"
+            elif "CONCORRENCIA" in texto_busca_norm:
+                tipo_licitacao = "Concorrência"
+            elif "TOMADA DE PRECO" in texto_busca_norm:
+                tipo_licitacao = "Tomada de Preços"
+            elif "PREGAO" in texto_busca_norm:
+                tipo_licitacao = "Pregão Eletrônico"  # Default para pregão
+            
+            # Número do edital - vários padrões (melhorado)
+            patterns_edital = [
+                r'PE[- ]?N?[ºo°]?\s*0*(\d+)[\/\-](\d+)',  # PE-040/2025, PE nº 040/2025
+                r'PP[- ]?N?[ºo°]?\s*0*(\d+)[\/\-](\d+)',  # PP-040/2025
+                r'PREGAO[^\d]{0,20}N?[ºo°]?\s*0*(\d+)[\/\-](\d+)',  # PREGÃO nº 040/2025
+                r'REGISTRO DE PRECO[^\d]{0,10}N?[ºo°]?\s*0*(\d+)[\/\-](\d+)',
+                r'EDITAL[^\d]{0,10}N?[ºo°]?\s*0*(\d+)[\/\-](\d+)',
+            ]
+            
+            for pattern in patterns_edital:
+                match = re.search(pattern, texto_busca_norm)
+                if match:
+                    num_edital = f"{match.group(1)}/{match.group(2)}"
+                    break
+            
+            # Extrai o objeto limpo (primeira parte relevante)
+            objeto_limpo = objeto
+            # Remove quebras de linha múltiplas e limpa
+            objeto_limpo = re.sub(r'\n+', ' ', objeto_limpo)
+            objeto_limpo = re.sub(r'\s+', ' ', objeto_limpo).strip()
+            
+            # Tenta extrair apenas a parte do objeto
+            match_objeto = re.search(r'(?:para eventual|para\s+)?(?:CONTRATACAO|AQUISICAO|REGISTRO DE PRECOS?)[^\w]*(?:DE\s+)?(.+?)(?:O PROCEDIMENTO|O EDITAL|EM ATENDIMENTO|DATA|LOCAL|,\s*EM|$)', objeto_limpo, re.IGNORECASE)
+            if match_objeto:
+                objeto_limpo = match_objeto.group(1).strip()
+                # Remove pontuação final
+                objeto_limpo = re.sub(r'[,;.]+$', '', objeto_limpo).strip()
+            
+            # Se ainda muito longo, pega só início
+            if len(objeto_limpo) > 150:
+                objeto_limpo = objeto_limpo[:150] + "..."
+            
+            # Monta linha do tipo/número
+            linha_tipo = ""
+            if tipo_licitacao and num_edital:
+                linha_tipo = f"📋 *{tipo_licitacao} nº {num_edital}*"
+            elif tipo_licitacao:
+                linha_tipo = f"📋 *{tipo_licitacao}*"
+            elif num_edital:
+                linha_tipo = f"📋 *Edital nº {num_edital}*"
+            
+            msg = f"""📢 *Atualizações*
+
+🏛️ *{orgao}*
+{linha_tipo}
+📝 {objeto_limpo}
+
+📰 {fonte_nome} {data_hoje}
+🔗 {link}"""
+            
+            # Envia para todos os contatos (com delay para evitar 503)
+            for contact in contacts_list:
+                try:
+                    notifier = WhatsAppNotifier(contact.get('phone'), contact.get('apikey'))
+                    notifier.enviar_mensagem(msg)
+                    import time
+                    time.sleep(2)  # Delay de 2 segundos entre mensagens
+                except Exception as e:
+                    print(f"Erro ao notificar {contact.get('nome')}: {e}")
+            
+            # Delay entre licitações diferentes
+            import time
+            time.sleep(1)
+        
+        session.close()
+        
+    except Exception as e:
+        print(f"Erro ao enviar notificação: {e}")
+
+
+def processar_resultados(resultados_raw, notificar=False, fonte_nome=""):
     """Processa, filtra, pontua e salva uma lista de resultados brutos."""
     if not resultados_raw:
         st.warning("Nenhum resultado encontrado para processar.")
         return
+    
+    # Envia notificação se solicitado
+    if notificar and resultados_raw:
+        enviar_notificacao_scraper(resultados_raw, fonte_nome)
 
     session = get_session()
     client = PNCPClient()
@@ -706,137 +884,292 @@ elif page == "Buscar Licitações":
     dias = 60
 
     estados = st.multiselect("Estados:", ['RN', 'PB', 'PE', 'AL', 'CE', 'BA'], default=['RN', 'PB', 'PE', 'AL'])
-        
-    busca_ampla = st.checkbox("🌍 Modo Varredura Total (Ignorar filtros de palavras-chave)",
-                              help="Se marcado, traz TUDO o que foi publicado, sem filtrar por termos médicos. Útil para garantir que nada passou batido.")
-
-    st.markdown("#### Fontes de Busca")
     
     # --- PNCP (Fonte Principal) ---
-    use_pncp = st.checkbox("🏛️ PNCP (Portal Nacional de Contratações Públicas)", value=True, 
-                           help="Fonte oficial do Governo Federal. Pregões e Dispensas de todos os estados.")
+    st.markdown("""
+    <div style="background: linear-gradient(135deg, #1e3a5f 0%, #0f172a 100%); border-radius: 12px; padding: 16px; margin: 16px 0;">
+        <div style="display: flex; align-items: center; gap: 12px;">
+            <div style="font-size: 24px;">🏛️</div>
+            <div>
+                <div style="font-weight: 600; color: white; font-size: 14px;">PNCP - Portal Nacional</div>
+                <div style="font-size: 12px; color: rgba(255,255,255,0.7);">Fonte oficial do Governo Federal</div>
+            </div>
+        </div>
+    </div>
+    """, unsafe_allow_html=True)
+    use_pncp = st.checkbox("Incluir PNCP na busca completa", value=True, label_visibility="collapsed")
     
-    st.markdown("#### Fontes Extras - Diários Oficiais Municipais")
+    st.markdown("---")
+    st.markdown("#### 📰 Diários Oficiais Municipais")
+    st.caption("Clique no botão ▶️ para buscar apenas naquela fonte")
+    
+    # --- Grid de Scrapers com visual moderno ---
+    col_ext1, col_ext2, col_ext3 = st.columns(3)
     
     # --- FEMURN (RN) ---
-    col_ext1, col_ext2, col_ext3 = st.columns(3)
     with col_ext1:
-        st.markdown("**Rio Grande do Norte**")
-        col_chk, col_btn = st.columns([0.7, 0.3])
+        st.markdown("""
+        <div style="background: white; border: 1px solid #e5e7eb; border-radius: 12px; padding: 16px; margin: 4px 0; transition: all 0.2s;">
+            <div style="display: flex; align-items: center; gap: 12px; margin-bottom: 12px;">
+                <div style="width: 40px; height: 40px; background: linear-gradient(135deg, #3b82f6 0%, #1d4ed8 100%); border-radius: 10px; display: flex; align-items: center; justify-content: center;">
+                    <span style="font-size: 18px;">📰</span>
+                </div>
+                <div>
+                    <div style="font-weight: 600; font-size: 14px; color: #111827;">FEMURN</div>
+                    <div style="font-size: 12px; color: #6b7280;">Rio Grande do Norte</div>
+                </div>
+            </div>
+        </div>
+        """, unsafe_allow_html=True)
+        col_chk, col_btn = st.columns([0.6, 0.4])
         with col_chk:
-            use_femurn = st.checkbox("FEMURN (RN)", value=True, help="Diário Oficial dos Municípios do RN")
+            use_femurn = st.checkbox("Incluir", value=True, key="chk_femurn", label_visibility="collapsed")
         with col_btn:
-            if st.button("▶️", key="btn_femurn", help="Rodar apenas FEMURN"):
-                st.info("🔄 Aguarde... Não troque de página durante a busca!")
-                client = PNCPClient()
-                with st.status("Buscando no FEMURN...", expanded=True) as status:
+            if st.button("▶️ Buscar", key="btn_femurn", use_container_width=True):
+                with st.status("🔄 Buscando no FEMURN...", expanded=True) as status:
+                    st.write("📥 Baixando PDF do Diário Oficial...")
+                    client = PNCPClient()
                     scraper = FemurnScraper()
-                    res = scraper.buscar_oportunidades(client.TERMOS_POSITIVOS_PADRAO, termos_negativos=client.TERMOS_NEGATIVOS_PADRAO)
-                    processar_resultados(res)
-                    status.update(label="✅ FEMURN concluído!", state="complete")
-                    st.success("✅ Busca FEMURN finalizada!")
+                    res = scraper.buscar_oportunidades(client.TERMOS_PRIORITARIOS, termos_negativos=client.TERMOS_NEGATIVOS_PADRAO)
+                    if res:
+                        st.write(f"✅ Encontradas **{len(res)}** licitações!")
+                        for r in res[:3]:
+                            st.success(f"🏛️ {r.get('orgao', '')[:50]}")
+                    else:
+                        st.write("😕 Nenhuma licitação encontrada hoje")
+                    processar_resultados(res, notificar=True, fonte_nome="FEMURN")
+                    status.update(label=f"✅ FEMURN: {len(res)} encontradas", state="complete")
 
     # --- FAMUP (PB) ---
     with col_ext2:
-        st.markdown("**Paraíba**")
-        col_chk, col_btn = st.columns([0.7, 0.3])
+        st.markdown("""
+        <div style="background: white; border: 1px solid #e5e7eb; border-radius: 12px; padding: 16px; margin: 4px 0;">
+            <div style="display: flex; align-items: center; gap: 12px; margin-bottom: 12px;">
+                <div style="width: 40px; height: 40px; background: linear-gradient(135deg, #8b5cf6 0%, #6d28d9 100%); border-radius: 10px; display: flex; align-items: center; justify-content: center;">
+                    <span style="font-size: 18px;">📰</span>
+                </div>
+                <div>
+                    <div style="font-weight: 600; font-size: 14px; color: #111827;">FAMUP</div>
+                    <div style="font-size: 12px; color: #6b7280;">Paraíba</div>
+                </div>
+            </div>
+        </div>
+        """, unsafe_allow_html=True)
+        col_chk, col_btn = st.columns([0.6, 0.4])
         with col_chk:
-            use_famup = st.checkbox("FAMUP (PB)", value=True, help="Diário Oficial dos Municípios da PB")
+            use_famup = st.checkbox("Incluir", value=True, key="chk_famup", label_visibility="collapsed")
         with col_btn:
-            if st.button("▶️", key="btn_famup", help="Rodar apenas FAMUP"):
-                client = PNCPClient()
-                with st.status("Buscando no FAMUP...", expanded=True):
+            if st.button("▶️ Buscar", key="btn_famup", use_container_width=True):
+                with st.status("🔄 Buscando no FAMUP...", expanded=True) as status:
+                    st.write("📥 Baixando PDF do Diário Oficial...")
+                    client = PNCPClient()
                     scraper = FamupScraper()
-                    res = scraper.buscar_oportunidades(client.TERMOS_POSITIVOS_PADRAO, termos_negativos=client.TERMOS_NEGATIVOS_PADRAO)
-                    processar_resultados(res)
+                    res = scraper.buscar_oportunidades(client.TERMOS_PRIORITARIOS, termos_negativos=client.TERMOS_NEGATIVOS_PADRAO)
+                    if res:
+                        st.write(f"✅ Encontradas **{len(res)}** licitações!")
+                        for r in res[:3]:
+                            st.success(f"🏛️ {r.get('orgao', '')[:50]}")
+                    else:
+                        st.write("😕 Nenhuma licitação encontrada hoje")
+                    processar_resultados(res, notificar=True, fonte_nome="FAMUP")
+                    status.update(label=f"✅ FAMUP: {len(res)} encontradas", state="complete")
 
     # --- AMUPE (PE) ---
     with col_ext3:
-        st.markdown("**Pernambuco**")
-        col_chk, col_btn = st.columns([0.7, 0.3])
+        st.markdown("""
+        <div style="background: white; border: 1px solid #e5e7eb; border-radius: 12px; padding: 16px; margin: 4px 0;">
+            <div style="display: flex; align-items: center; gap: 12px; margin-bottom: 12px;">
+                <div style="width: 40px; height: 40px; background: linear-gradient(135deg, #ec4899 0%, #be185d 100%); border-radius: 10px; display: flex; align-items: center; justify-content: center;">
+                    <span style="font-size: 18px;">📰</span>
+                </div>
+                <div>
+                    <div style="font-weight: 600; font-size: 14px; color: #111827;">AMUPE</div>
+                    <div style="font-size: 12px; color: #6b7280;">Pernambuco</div>
+                </div>
+            </div>
+        </div>
+        """, unsafe_allow_html=True)
+        col_chk, col_btn = st.columns([0.6, 0.4])
         with col_chk:
-            use_amupe = st.checkbox("AMUPE (PE)", value=True, help="Diário Oficial dos Municípios de PE")
+            use_amupe = st.checkbox("Incluir", value=True, key="chk_amupe", label_visibility="collapsed")
         with col_btn:
-            if st.button("▶️", key="btn_amupe", help="Rodar apenas AMUPE"):
-                client = PNCPClient()
-                with st.status("Buscando no AMUPE...", expanded=True):
+            if st.button("▶️ Buscar", key="btn_amupe", use_container_width=True):
+                with st.status("🔄 Buscando no AMUPE...", expanded=True) as status:
+                    st.write("📥 Baixando PDF do Diário Oficial...")
+                    client = PNCPClient()
                     scraper = AmupeScraper()
-                    res = scraper.buscar_oportunidades(client.TERMOS_POSITIVOS_PADRAO, termos_negativos=client.TERMOS_NEGATIVOS_PADRAO)
-                    processar_resultados(res)
+                    res = scraper.buscar_oportunidades(client.TERMOS_PRIORITARIOS, termos_negativos=client.TERMOS_NEGATIVOS_PADRAO)
+                    if res:
+                        st.write(f"✅ Encontradas **{len(res)}** licitações!")
+                        for r in res[:3]:
+                            st.success(f"🏛️ {r.get('orgao', '')[:50]}")
+                    else:
+                        st.write("😕 Nenhuma licitação encontrada hoje")
+                    processar_resultados(res, notificar=True, fonte_nome="AMUPE")
+                    status.update(label=f"✅ AMUPE: {len(res)} encontradas", state="complete")
 
     # --- ALAGOAS ---
-    st.markdown("**Alagoas**")
+    st.markdown("##### 🟠 Alagoas")
     col_al1, col_al2, col_al3, col_al4 = st.columns(4)
     
     with col_al1:
-        col_chk, col_btn = st.columns([0.7, 0.3])
-        with col_chk:
-            use_ama = st.checkbox("AMA (AL)", value=True, help="Associação dos Municípios Alagoanos")
-        with col_btn:
-            if st.button("▶️", key="btn_ama", help="Rodar apenas AMA"):
+        st.markdown("""<div style="background: white; border: 1px solid #e5e7eb; border-radius: 10px; padding: 12px; text-align: center;">
+            <div style="font-weight: 600; font-size: 13px; color: #111827;">AMA</div>
+            <div style="font-size: 11px; color: #6b7280;">Municípios AL</div>
+        </div>""", unsafe_allow_html=True)
+        use_ama = st.checkbox("Incluir", value=True, key="chk_ama", label_visibility="collapsed")
+        if st.button("▶️", key="btn_ama", use_container_width=True):
+            with st.status("🔄 Buscando no AMA...", expanded=True) as status:
                 client = PNCPClient()
-                with st.status("Buscando no AMA...", expanded=True):
-                    scraper = AmaScraper()
-                    res = scraper.buscar_oportunidades(client.TERMOS_POSITIVOS_PADRAO, termos_negativos=client.TERMOS_NEGATIVOS_PADRAO)
-                    processar_resultados(res)
+                scraper = AmaScraper()
+                res = scraper.buscar_oportunidades(client.TERMOS_PRIORITARIOS, termos_negativos=client.TERMOS_NEGATIVOS_PADRAO)
+                if res:
+                    for r in res[:3]:
+                        st.success(f"🏛️ {r.get('orgao', '')[:40]}")
+                processar_resultados(res, notificar=True, fonte_nome="AMA")
+                status.update(label=f"✅ AMA: {len(res)}", state="complete")
 
     with col_al2:
-        col_chk, col_btn = st.columns([0.7, 0.3])
-        with col_chk:
-            use_maceio = st.checkbox("Maceió", value=True, help="Diário Oficial de Maceió")
-        with col_btn:
-            if st.button("▶️", key="btn_maceio", help="Rodar apenas Maceió"):
+        st.markdown("""<div style="background: white; border: 1px solid #e5e7eb; border-radius: 10px; padding: 12px; text-align: center;">
+            <div style="font-weight: 600; font-size: 13px; color: #111827;">Maceió</div>
+            <div style="font-size: 11px; color: #6b7280;">Capital AL</div>
+        </div>""", unsafe_allow_html=True)
+        use_maceio = st.checkbox("Incluir", value=True, key="chk_maceio", label_visibility="collapsed")
+        if st.button("▶️", key="btn_maceio", use_container_width=True):
+            with st.status("🔄 Buscando em Maceió...", expanded=True) as status:
                 client = PNCPClient()
-                with st.status("Buscando em Maceió...", expanded=True):
-                    scraper = MaceioScraper()
-                    res = scraper.buscar_oportunidades(client.TERMOS_POSITIVOS_PADRAO, termos_negativos=client.TERMOS_NEGATIVOS_PADRAO)
-                    processar_resultados(res)
+                scraper = MaceioScraper()
+                res = scraper.buscar_oportunidades(client.TERMOS_PRIORITARIOS, termos_negativos=client.TERMOS_NEGATIVOS_PADRAO)
+                if res:
+                    for r in res[:3]:
+                        st.success(f"🏛️ {r.get('orgao', '')[:40]}")
+                processar_resultados(res, notificar=True, fonte_nome="Maceió")
+                status.update(label=f"✅ Maceió: {len(res)}", state="complete")
 
     with col_al3:
-        col_chk, col_btn = st.columns([0.7, 0.3])
-        with col_chk:
-            use_maceio_investe = st.checkbox("Maceió Investe", value=True, help="Diário Oficial Maceió Investe")
-        with col_btn:
-            if st.button("▶️", key="btn_maceio_inv", help="Rodar apenas Maceió Investe"):
+        st.markdown("""<div style="background: white; border: 1px solid #e5e7eb; border-radius: 10px; padding: 12px; text-align: center;">
+            <div style="font-weight: 600; font-size: 13px; color: #111827;">Investe</div>
+            <div style="font-size: 11px; color: #6b7280;">Maceió</div>
+        </div>""", unsafe_allow_html=True)
+        use_maceio_investe = st.checkbox("Incluir", value=True, key="chk_maceio_inv", label_visibility="collapsed")
+        if st.button("▶️", key="btn_maceio_inv", use_container_width=True):
+            with st.status("🔄 Buscando em Maceió Investe...", expanded=True) as status:
                 client = PNCPClient()
-                with st.status("Buscando em Maceió Investe...", expanded=True):
-                    scraper = MaceioInvesteScraper()
-                    res = scraper.buscar_oportunidades(client.TERMOS_POSITIVOS_PADRAO, termos_negativos=client.TERMOS_NEGATIVOS_PADRAO)
-                    processar_resultados(res)
+                scraper = MaceioInvesteScraper()
+                res = scraper.buscar_oportunidades(client.TERMOS_PRIORITARIOS, termos_negativos=client.TERMOS_NEGATIVOS_PADRAO)
+                if res:
+                    for r in res[:3]:
+                        st.success(f"🏛️ {r.get('orgao', '')[:40]}")
+                processar_resultados(res, notificar=True, fonte_nome="Maceió Investe")
+                status.update(label=f"✅ Investe: {len(res)}", state="complete")
 
     with col_al4:
-        col_chk, col_btn = st.columns([0.7, 0.3])
-        with col_chk:
-            use_maceio_saude = st.checkbox("Maceió Saúde", value=True, help="Diário Oficial Maceió Saúde")
-        with col_btn:
-            if st.button("▶️", key="btn_maceio_saude", help="Rodar apenas Maceió Saúde"):
+        st.markdown("""<div style="background: white; border: 1px solid #e5e7eb; border-radius: 10px; padding: 12px; text-align: center;">
+            <div style="font-weight: 600; font-size: 13px; color: #111827;">Saúde</div>
+            <div style="font-size: 11px; color: #6b7280;">Maceió</div>
+        </div>""", unsafe_allow_html=True)
+        use_maceio_saude = st.checkbox("Incluir", value=True, key="chk_maceio_saude", label_visibility="collapsed")
+        if st.button("▶️", key="btn_maceio_saude", use_container_width=True):
+            with st.status("🔄 Buscando em Maceió Saúde...", expanded=True) as status:
                 client = PNCPClient()
-                with st.status("Buscando em Maceió Saúde...", expanded=True):
-                    scraper = MaceioSaudeScraper()
-                    res = scraper.buscar_oportunidades(client.TERMOS_POSITIVOS_PADRAO, termos_negativos=client.TERMOS_NEGATIVOS_PADRAO)
-                    processar_resultados(res)
+                scraper = MaceioSaudeScraper()
+                res = scraper.buscar_oportunidades(client.TERMOS_PRIORITARIOS, termos_negativos=client.TERMOS_NEGATIVOS_PADRAO)
+                if res:
+                    for r in res[:3]:
+                        st.success(f"🏛️ {r.get('orgao', '')[:40]}")
+                processar_resultados(res, notificar=True, fonte_nome="Maceió Saúde")
+                status.update(label=f"✅ Saúde: {len(res)}", state="complete")
 
+    st.markdown("---")
+    
     # Filtro de futuro agora é MANDATÓRIO
     filtro_futuro = True
 
-    # Aviso importante sobre não trocar de página
-    st.warning("⚠️ **IMPORTANTE:** Durante a busca, **NÃO TROQUE DE PÁGINA** no menu lateral! A busca será interrompida e você perderá o progresso. Aguarde a conclusão antes de navegar.")
-
-    if st.button("Iniciar Varredura Completa"):
-        # Aviso adicional antes de iniciar
-        st.info("**Busca em andamento...** (Motor v2.0 - com IA Semântica)")
-
-        engine = SearchEngine()
+    # === STATUS DA BUSCA EM BACKGROUND ===
+    search_status = background_manager.get_current_status()
+    
+    if search_status['status'] == 'running':
+        st.info(f"""
+        🔄 **Busca em andamento...**  
+        {search_status.get('message', '')}
         
-        def streamlit_callback(msg):
-            st.write(msg)
-
-        with st.status("Executando Motor de Busca Inteligente...", expanded=True) as status:
-            # Executa a busca unificada (PNCP + Externos + IA + Async)
-            engine.execute_full_search(dias=60, estados=estados, callback=streamlit_callback)
+        Você pode navegar pelo sistema normalmente. A busca continua em segundo plano.
+        """)
+        
+        col_cancel, col_refresh = st.columns([1, 1])
+        with col_cancel:
+            if st.button("❌ Cancelar Busca", type="secondary"):
+                result = background_manager.cancel_search()
+                st.warning(result['message'])
+                time.sleep(1)
+                st.rerun()
+        with col_refresh:
+            if st.button("🔄 Atualizar Status"):
+                st.rerun()
+                
+    elif search_status['status'] == 'completed' and search_status.get('finished_at'):
+        finished = search_status['finished_at']
+        if isinstance(finished, datetime):
+            tempo_desde = (datetime.now() - finished).seconds
+            if tempo_desde < 300:  # Últimos 5 minutos
+                st.success(f"""
+                ✅ **Busca concluída!**  
+                {search_status.get('total_novos', 0)} novas licitações importadas.  
+                Finalizado há {tempo_desde // 60} min {tempo_desde % 60}s.
+                """)
+    
+    elif search_status['status'] == 'error':
+        st.error(f"❌ Última busca falhou: {search_status.get('resumo', 'Erro desconhecido')}")
+    
+    st.divider()
+    
+    # Monta lista de fontes selecionadas
+    fontes_selecionadas = []
+    if use_pncp:
+        fontes_selecionadas.append('pncp')
+    if use_femurn:
+        fontes_selecionadas.append('femurn')
+    if use_famup:
+        fontes_selecionadas.append('famup')
+    if use_amupe:
+        fontes_selecionadas.append('amupe')
+    if use_ama:
+        fontes_selecionadas.append('ama')
+    if use_maceio:
+        fontes_selecionadas.append('maceio')
+    if use_maceio_investe:
+        fontes_selecionadas.append('maceio_investe')
+    if use_maceio_saude:
+        fontes_selecionadas.append('maceio_saude')
+    
+    # Botão principal de busca
+    col_btn1, col_btn2 = st.columns([2, 1])
+    
+    with col_btn1:
+        btn_disabled = search_status['status'] == 'running'
+        btn_label = f"🚀 Iniciar Busca ({len(fontes_selecionadas)} fonte{'s' if len(fontes_selecionadas) != 1 else ''})"
+        
+        if not fontes_selecionadas:
+            st.warning("⚠️ Selecione pelo menos uma fonte de busca")
+        elif st.button(btn_label, type="primary", disabled=btn_disabled, use_container_width=True):
+            result = background_manager.start_search(dias=60, estados=estados, fontes=fontes_selecionadas)
             
-            status.update(label="Busca concluída com sucesso!", state="complete", expanded=False)
-            st.success("**Busca finalizada!** Oportunidades salvas e validadas pela IA.")
+            if result['success']:
+                st.success(f"""
+                ✅ **{result['message']}**  
+                
+                A busca está rodando em **segundo plano**. Você pode:
+                - Navegar para outras páginas
+                - Ver o status no indicador do menu lateral
+                - Voltar aqui para acompanhar o progresso
+                """)
+                time.sleep(1)
+                st.rerun()
+            else:
+                st.warning(result['message'])
+    
+    with col_btn2:
+        st.caption("A busca roda em background. Você pode navegar pelo sistema.")
 
     st.divider()
     
@@ -903,6 +1236,182 @@ elif page == "Buscar Licitações":
             session.close()
             time.sleep(1)
             st.rerun()
+
+elif page == "Preparar Competição":
+    st.header("🎯 Preparar para Competir")
+    st.info("Selecione licitações **fixadas** (⭐) para análise profunda. A IA lerá todos os anexos e preparará um relatório completo.")
+    
+    session = get_session()
+    
+    # Busca apenas licitações SALVAS (fixadas)
+    licitacoes_salvas = session.query(Licitacao).filter_by(status='Salva').order_by(Licitacao.data_encerramento_proposta.asc()).all()
+    
+    if not licitacoes_salvas:
+        st.warning("Nenhuma licitação fixada. Vá ao Dashboard e clique em ⭐ Fixar nas licitações de interesse.")
+    else:
+        st.success(f"📌 {len(licitacoes_salvas)} licitações fixadas para análise")
+        
+        # Lista de licitações para selecionar
+        for lic in licitacoes_salvas:
+            # Verifica se já tem análise
+            cached_analysis = deep_analyzer.get_cached_analysis(lic.id)
+            
+            # Card da licitação
+            with st.expander(f"{'✅' if cached_analysis else '⏳'} {lic.orgao} ({lic.uf}) - {lic.modalidade}", expanded=False):
+                col_info, col_action = st.columns([3, 1])
+                
+                with col_info:
+                    st.markdown(f"**Objeto:** {lic.objeto[:200]}...")
+                    if lic.data_encerramento_proposta:
+                        dias = (lic.data_encerramento_proposta - datetime.now()).days
+                        st.markdown(f"⏰ **Prazo:** {lic.data_encerramento_proposta.strftime('%d/%m/%Y')} ({dias} dias)")
+                    st.markdown(f"🔗 [Abrir no Portal]({lic.link})")
+                
+                with col_action:
+                    if cached_analysis:
+                        st.markdown(f"**Score:** {cached_analysis.score_viabilidade}/100")
+                        st.markdown(f"**Recomendação:** {cached_analysis.recomendacao_final}")
+                
+                # Botão de análise
+                col_btn1, col_btn2 = st.columns(2)
+                with col_btn1:
+                    if st.button("🔍 Analisar Profundamente", key=f"analyze_{lic.id}", type="primary"):
+                        with st.spinner("🤖 Baixando anexos e analisando com IA... Isso pode levar alguns minutos."):
+                            result = deep_analyzer.analyze(lic.id, force_refresh=True)
+                            if result:
+                                st.success("✅ Análise concluída!")
+                                st.rerun()
+                            else:
+                                st.error("❌ Erro na análise. Verifique se a API Key do Gemini está configurada.")
+                
+                with col_btn2:
+                    if cached_analysis:
+                        if st.button("🔄 Refazer Análise", key=f"refresh_{lic.id}"):
+                            with st.spinner("Refazendo análise..."):
+                                result = deep_analyzer.analyze(lic.id, force_refresh=True)
+                                st.rerun()
+                
+                # Mostra resultado da análise se existir
+                if cached_analysis:
+                    st.divider()
+                    
+                    # Score visual
+                    score = cached_analysis.score_viabilidade
+                    if score >= 70:
+                        score_color = "🟢"
+                    elif score >= 40:
+                        score_color = "🟡"
+                    else:
+                        score_color = "🔴"
+                    
+                    st.markdown(f"""
+                    ### {score_color} Viabilidade: {score}/100
+                    **Recomendação:** `{cached_analysis.recomendacao_final}`
+                    
+                    **Justificativa:** {cached_analysis.justificativa}
+                    """)
+                    
+                    # Tabs para detalhes
+                    tab1, tab2, tab3, tab4 = st.tabs(["📋 Resumo", "🚫 Impedimentos", "📄 Documentos", "✅ Próximos Passos"])
+                    
+                    with tab1:
+                        col1, col2 = st.columns(2)
+                        with col1:
+                            st.markdown(f"""
+                            **Resumo do Objeto:**  
+                            {cached_analysis.resumo_objeto}
+                            
+                            **Valor Total Estimado:** R$ {cached_analysis.valor_total_estimado:,.2f}  
+                            **Prazo de Entrega:** {cached_analysis.prazo_entrega}  
+                            **Local:** {cached_analysis.local_entrega}
+                            """)
+                        with col2:
+                            st.markdown(f"""
+                            **Total de Itens:** {cached_analysis.total_itens}  
+                            **Itens Compatíveis:** {cached_analysis.itens_compativeis}  
+                            **PDFs Analisados:** {len(cached_analysis.pdf_analisados)}
+                            """)
+                            if cached_analysis.pdf_analisados:
+                                for pdf in cached_analysis.pdf_analisados:
+                                    st.caption(f"📄 {pdf}")
+                        
+                        # Pontos Fortes e Fracos
+                        col_f, col_fr = st.columns(2)
+                        with col_f:
+                            st.markdown("**💪 Pontos Fortes:**")
+                            for p in cached_analysis.pontos_fortes:
+                                st.markdown(f"- {p}")
+                        with col_fr:
+                            st.markdown("**⚠️ Pontos Fracos:**")
+                            for p in cached_analysis.pontos_fracos:
+                                st.markdown(f"- {p}")
+                    
+                    with tab2:
+                        if cached_analysis.impedimentos:
+                            st.error("**🚫 Impedimentos Identificados:**")
+                            for imp in cached_analysis.impedimentos:
+                                st.markdown(f"- ❌ {imp}")
+                        else:
+                            st.success("✅ Nenhum impedimento grave identificado")
+                        
+                        st.divider()
+                        
+                        if cached_analysis.riscos:
+                            st.warning("**⚠️ Riscos:**")
+                            for r in cached_analysis.riscos:
+                                st.markdown(f"- {r}")
+                    
+                    with tab3:
+                        st.markdown("**📋 Requisitos de Habilitação:**")
+                        for req in cached_analysis.requisitos_habilitacao:
+                            st.markdown(f"- {req}")
+                        
+                        st.divider()
+                        
+                        st.markdown("**📄 Documentos Necessários:**")
+                        for doc in cached_analysis.documentos_necessarios:
+                            st.checkbox(doc, key=f"doc_{lic.id}_{hash(doc)}")
+                    
+                    with tab4:
+                        st.markdown("**✅ Próximos Passos:**")
+                        for i, passo in enumerate(cached_analysis.proximos_passos, 1):
+                            st.markdown(f"{i}. {passo}")
+                        
+                        st.divider()
+                        
+                        # Botões de ação final
+                        col_a1, col_a2, col_a3 = st.columns(3)
+                        with col_a1:
+                            if st.button("📝 Preparar Proposta", key=f"proposta_{lic.id}", type="primary"):
+                                st.info("Funcionalidade em desenvolvimento: Geração automática de proposta")
+                        with col_a2:
+                            if st.button("📧 Exportar Análise", key=f"export_{lic.id}"):
+                                # Gera texto para copiar
+                                export_text = f"""
+ANÁLISE DE LICITAÇÃO - MEDCAL FARMA
+
+Órgão: {lic.orgao} ({lic.uf})
+Modalidade: {lic.modalidade}
+Objeto: {cached_analysis.resumo_objeto}
+Score: {cached_analysis.score_viabilidade}/100
+Recomendação: {cached_analysis.recomendacao_final}
+
+IMPEDIMENTOS:
+{chr(10).join(['- ' + i for i in cached_analysis.impedimentos]) or 'Nenhum'}
+
+PRÓXIMOS PASSOS:
+{chr(10).join([f'{i+1}. {p}' for i, p in enumerate(cached_analysis.proximos_passos)])}
+"""
+                                st.text_area("Copie o texto:", export_text, height=300)
+                        with col_a3:
+                            if st.button("❌ Descartar", key=f"descartar_{lic.id}"):
+                                lic.status = 'Ignorada'
+                                session.commit()
+                                st.warning("Licitação marcada como ignorada")
+                                time.sleep(1)
+                                st.rerun()
+    
+    session.close()
 
 elif page == "🧠 Análise de IA":
     st.header("🧠 Análise Inteligente de Licitações")
@@ -1196,7 +1705,7 @@ elif page == "Dashboard":
                 
                 # Ações Extras
                 st.markdown("---")
-                col_act1, col_act2, col_act3, col_act4 = st.columns(4)
+                col_act1, col_act2, col_act3, col_act4, col_act5, col_act6 = st.columns(6)
                 
                 with col_act1:
                     if st.button("📂 Ver Arquivos", key=f"btn_arq_{lic.id}"):
@@ -1225,6 +1734,25 @@ elif page == "Dashboard":
                     if st.button("📱 WhatsApp", key=f"btn_wpp_{lic.id}"):
                         import json
                         session = get_session()
+
+                        # Tenta puxar o edital/anexos direto do PNCP para compartilhar no WhatsApp
+                        edital_link = None
+                        if lic.pncp_id:
+                            try:
+                                parts = lic.pncp_id.split('-')
+                                if len(parts) >= 3:
+                                    pncp_client = PNCPClient()
+                                    lic_dict = {"cnpj": parts[0], "ano": parts[1], "seq": parts[2]}
+                                    arquivos = pncp_client.buscar_arquivos(lic_dict) or []
+
+                                    # Prioriza PDF que contenha "edital" no título
+                                    pdfs = [a for a in arquivos if (a.get("url") or "").lower().endswith(".pdf") or (a.get("nome") or "").lower().endswith(".pdf")]
+                                    edital_pdf = next((a for a in pdfs if "edital" in (a.get("titulo") or "").lower()), None)
+                                    alvo = edital_pdf or (pdfs[0] if pdfs else None)
+                                    if alvo:
+                                        edital_link = alvo.get("url")
+                            except Exception as e:
+                                print(f"[WhatsApp] Falha ao buscar edital PNCP: {e}")
 
                         # Tenta buscar configuração nova (múltiplos contatos)
                         config_contacts = session.query(Configuracao).filter_by(chave='whatsapp_contacts').first()
@@ -1264,6 +1792,8 @@ elif page == "Dashboard":
                             msg += f"📋 {lic.modalidade}\n\n"
                             msg += f"📦 *Destaques:*\n{itens_str}\n"
                             msg += f"🔗 {lic.link}"
+                            if edital_link:
+                                msg += f"\n📑 Edital (PDF): {edital_link}"
 
                             # Envia para todos os contatos configurados
                             enviados = 0
@@ -1294,6 +1824,22 @@ elif page == "Dashboard":
                             st.toast("Licitação salva com sucesso!", icon="✅")
                         session.commit()
                         time.sleep(0.5)
+                        st.rerun()
+
+                with col_act5:
+                    if st.button("✅ Participar", key=f"btn_part_{lic.id}", help="Marcar para participar desta licitação"):
+                        lic.status = "Participar"
+                        session.commit()
+                        st.toast("Marcada como Participar.", icon="✅")
+                        time.sleep(0.3)
+                        st.rerun()
+
+                with col_act6:
+                    if st.button("🚫 Ignorar", key=f"btn_ignore_{lic.id}", help="Ignorar esta licitação"):
+                        lic.status = "Ignorada"
+                        session.commit()
+                        st.toast("Marcada como Ignorada.", icon="⚠️")
+                        time.sleep(0.3)
                         st.rerun()
 
 elif page == "💰 Gestão Financeira":
@@ -2044,21 +2590,50 @@ elif page == "Configurações":
     
     session = get_session()
     
-    # --- Seção 1: Configuração IA (Gemini) ---
-    st.subheader("🤖 Configuração da IA (Gemini)")
-    st.markdown("Configure sua chave de API do Google Gemini para ativar resumos automáticos e estimativas de preço.")
+    # --- Seção 1: Configuração IA ---
+    st.subheader("🤖 Configuração da IA")
+    st.markdown("""
+    Configure as chaves de API para IA. O sistema **prioriza OpenRouter** (modelos gratuitos ilimitados) 
+    e usa Gemini como fallback.
+    """)
     
-    config_api_key = session.query(Configuracao).filter_by(chave='gemini_api_key').first()
-    if not config_api_key:
-        config_api_key = Configuracao(chave='gemini_api_key', valor='')
-        session.add(config_api_key)
-        session.commit()
+    col_ai1, col_ai2 = st.columns(2)
+    
+    with col_ai1:
+        st.markdown("**🆓 OpenRouter (Recomendado - Gratuito)**")
+        st.caption("Modelos gratuitos sem limite de requisições")
         
-    nova_key = st.text_input("Gemini API Key", value=config_api_key.valor, type="password")
-    if st.button("Salvar API Key"):
-        config_api_key.valor = nova_key
-        session.commit()
-        st.success("API Key salva com sucesso!")
+        config_openrouter = session.query(Configuracao).filter_by(chave='openrouter_api_key').first()
+        if not config_openrouter:
+            config_openrouter = Configuracao(chave='openrouter_api_key', valor='')
+            session.add(config_openrouter)
+            session.commit()
+        
+        nova_openrouter_key = st.text_input("OpenRouter API Key", value=config_openrouter.valor, type="password", key="openrouter_key")
+        if st.button("Salvar OpenRouter Key"):
+            config_openrouter.valor = nova_openrouter_key
+            session.commit()
+            st.success("✅ OpenRouter Key salva!")
+        
+        st.caption("Obtenha em: https://openrouter.ai/keys")
+    
+    with col_ai2:
+        st.markdown("**🔄 Gemini (Fallback)**")
+        st.caption("Usado se OpenRouter não estiver configurado")
+        
+        config_api_key = session.query(Configuracao).filter_by(chave='gemini_api_key').first()
+        if not config_api_key:
+            config_api_key = Configuracao(chave='gemini_api_key', valor='')
+            session.add(config_api_key)
+            session.commit()
+            
+        nova_key = st.text_input("Gemini API Key", value=config_api_key.valor, type="password", key="gemini_key")
+        if st.button("Salvar Gemini Key"):
+            config_api_key.valor = nova_key
+            session.commit()
+            st.success("✅ Gemini Key salva!")
+        
+        st.caption("Obtenha em: https://aistudio.google.com/apikey")
         
     st.divider()
         
@@ -2094,6 +2669,12 @@ elif page == "Configurações":
     
     # Lista de Contatos
     if contacts_list:
+        msg_padrao = "🔔 Teste de notificação Medcal realizado com sucesso!"
+        msg_custom_global = st.text_area(
+            "Mensagem de teste (será enviada para todos)",
+            value=msg_padrao,
+            key="msg_wpp_global"
+        )
         st.write("**Contatos Cadastrados:**")
         for idx, contact in enumerate(contacts_list):
             with st.container():
@@ -2103,7 +2684,8 @@ elif page == "Configurações":
                 
                 if c3.button("🔔", key=f"test_wpp_{idx}", help="Enviar mensagem de teste"):
                     notifier = WhatsAppNotifier(contact.get('phone'), contact.get('apikey'))
-                    if notifier.enviar_mensagem("🔔 Teste de notificação Medcal realizado com sucesso!"):
+                    texto = (msg_custom_global or "").strip() or msg_padrao
+                    if notifier.enviar_mensagem(texto):
                         st.toast(f"Mensagem enviada para {contact.get('nome')}!", icon="✅")
                     else:
                         erro_msg = notifier.ultimo_erro or "Erro desconhecido"

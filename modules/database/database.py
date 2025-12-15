@@ -97,6 +97,26 @@ class AlertSent(Base):
     run = relationship("AgentRun", back_populates="alerts")
     licitacao = relationship("Licitacao")
 
+
+class LicitacaoFeature(Base):
+    """
+    Armazena sinais úteis para treino futuro de modelo de classificação:
+    - motivo de aprovação (termos que passaram)
+    - termos encontrados no objeto
+    - fonte/canal de coleta
+    """
+    __tablename__ = 'licitacao_features'
+
+    id = Column(Integer, primary_key=True)
+    licitacao_id = Column(Integer, ForeignKey('licitacoes.id'), nullable=False)
+    fonte = Column(String, default="desconhecida")
+    motivo_aprovacao = Column(Text, nullable=True)
+    termos_encontrados = Column(Text, nullable=True)  # JSON string
+    objeto_resumido = Column(Text, nullable=True)
+    criado_em = Column(DateTime, default=datetime.now)
+
+    licitacao = relationship("Licitacao")
+
 # Configuracao do Banco
 BASE_DIR = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 DB_PATH = os.path.join(BASE_DIR, 'data', 'medcal.db')

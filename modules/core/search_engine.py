@@ -6,11 +6,12 @@ from rapidfuzz import fuzz
 from sqlalchemy import or_
 import json
 
-from modules.database.database import get_session, Licitacao, ItemLicitacao, Produto, Configuracao
+from modules.database.database import get_session, Licitacao, ItemLicitacao, Produto, Configuracao, LicitacaoFeature
 from modules.scrapers.pncp_client import PNCPClient
 from modules.ai.improved_matcher import SemanticMatcher
 from modules.utils.notifications import WhatsAppNotifier
-from modules.scrapers.external_scrapers import FemurnScraper, FamupScraper, AmupeScraper, AmaScraper, MaceioScraper, MaceioInvesteScraper, MaceioSaudeScraper
+from modules.scrapers.external_scrapers import FemurnScraper, FamupScraper, AmupeScraper, AmaScraper, MaceioScraper, MaceioInvesteScraper, MaceioSaudeScraper, BncScraper
+from modules.scrapers.pdf_extractor import PDFExtractor
 
 def normalize_text(texto: str) -> str:
     if not texto:
@@ -141,37 +142,93 @@ class SearchEngine:
         
         return True
 
-    def execute_full_search(self, dias=60, estados=['RN', 'PB', 'PE', 'AL'], callback=None):
-        self.log("Iniciando varredura completa...", callback)
+    def execute_full_search(self, dias=60, estados=['RN', 'PB', 'PE', 'AL'], fontes=None, callback=None):
+        """
+        Executa busca completa.
+        
+        Args:
+            dias: Dias de histórico para buscar
+            estados: Lista de UFs
+            fontes: Lista de fontes a usar. Se None, usa todas. Ex: ['pncp', 'femurn', 'famup']
+            callback: Função de callback para logs
+        """
+        self.log(f"Iniciando varredura. Dias={dias}, Estados={estados}, Fontes={fontes or 'TODAS'}...", callback)
         resultados_raw = []
         
-        # 1. PNCP
-        try:
-            self.log("Buscando no PNCP...", callback)
-            res_pncp = self.client.buscar_oportunidades(dias, estados, termos_positivos=self.client.TERMOS_POSITIVOS_PADRAO)
-            resultados_raw.extend(res_pncp)
-        except Exception as e:
-            self.log(f"Erro PNCP: {e}", callback)
-
-        # 2. Externos
-        scrapers = [
-            (FemurnScraper, "FEMURN"),
-            (FamupScraper, "FAMUP"),
-            (AmupeScraper, "AMUPE"),
-            (AmaScraper, "AMA"),
-            (MaceioScraper, "Maceió"),
-            (MaceioInvesteScraper, "Maceió Investe"),
-            (MaceioSaudeScraper, "Maceió Saúde")
-        ]
+        # Definição das tarefas para execução paralela
+        # NOTA: Não usamos 'callback' (UI) dentro das threads para evitar erro de Contexto do Streamlit
         
-        for ScraperCls, name in scrapers:
+        def fetch_pncp():
             try:
-                self.log(f"Buscando em {name}...", callback)
-                scraper = ScraperCls()
-                res = scraper.buscar_oportunidades(self.client.TERMOS_POSITIVOS_PADRAO, self.client.TERMOS_NEGATIVOS_PADRAO)
-                resultados_raw.extend(res)
+                return self.client.buscar_oportunidades(dias, estados, termos_positivos=self.client.TERMOS_POSITIVOS_PADRAO)
             except Exception as e:
-                self.log(f"Erro {name}: {e}", callback)
+                print(f"Erro PNCP: {e}")
+                return []
+
+        scrapers_map = {
+            'femurn': (FemurnScraper, "FEMURN"),
+            'famup': (FamupScraper, "FAMUP"),
+            'amupe': (AmupeScraper, "AMUPE"),
+            'ama': (AmaScraper, "AMA"),
+            'maceio': (MaceioScraper, "Maceió"),
+            'maceio_investe': (MaceioInvesteScraper, "Maceió Investe"),
+            'maceio_saude': (MaceioSaudeScraper, "Maceió Saúde"),
+            'bnc': (BncScraper, "BNC")
+        }
+        
+        def fetch_external(ScraperCls, name):
+            try:
+                scraper = ScraperCls()
+                # BNC usa UF explicitamente; passa lista de estados
+                if name == "BNC":
+                    return scraper.buscar_oportunidades(self.client.TERMOS_POSITIVOS_PADRAO, self.client.TERMOS_NEGATIVOS_PADRAO, estados=estados)
+                return scraper.buscar_oportunidades(self.client.TERMOS_POSITIVOS_PADRAO, self.client.TERMOS_NEGATIVOS_PADRAO)
+            except Exception as e:
+                print(f"Erro {name}: {e}")
+                return []
+
+        # Determina quais fontes usar
+        usar_pncp = fontes is None or 'pncp' in fontes
+        
+        scrapers_ativos = []
+        if fontes is None:
+            # Usa todos os scrapers
+            scrapers_ativos = list(scrapers_map.values())
+        else:
+            # Usa apenas os selecionados
+            for key, value in scrapers_map.items():
+                if key in fontes:
+                    scrapers_ativos.append(value)
+        
+        total_fontes = (1 if usar_pncp else 0) + len(scrapers_ativos)
+        self.log(f"Disparando busca em {total_fontes} fonte(s)...", callback)
+        
+        with concurrent.futures.ThreadPoolExecutor(max_workers=10) as executor:
+            tasks = []
+            
+            # 1. Dispara PNCP (se selecionado)
+            if usar_pncp:
+                tasks.append(executor.submit(fetch_pncp))
+            
+            # 2. Dispara Externos (apenas os selecionados)
+            for ScraperCls, name in scrapers_ativos:
+                tasks.append(executor.submit(fetch_external, ScraperCls, name))
+            
+            # 3. Coleta resultados
+            completed_count = 0
+            total_tasks = len(tasks)
+            
+            for future in concurrent.futures.as_completed(tasks):
+                completed_count += 1
+                try:
+                    res = future.result()
+                    if res:
+                        resultados_raw.extend(res)
+                        self.log(f"Fonte {completed_count}/{total_tasks} finalizada (+{len(res)} itens)", callback)
+                    else:
+                        self.log(f"Fonte {completed_count}/{total_tasks} finalizada (sem itens)", callback)
+                except Exception as e:
+                    self.log(f"Erro fatal em thread de busca: {e}", callback)
                 
         self.log(f"Total de oportunidades encontradas: {len(resultados_raw)}", callback)
         
@@ -243,21 +300,47 @@ class SearchEngine:
             session.add(lic)
             session.flush() # Get ID
 
+            # Registra sinais para treino futuro (NLP/classificador)
+            termos_hit = res.get('termos_encontrados') or []
+            feature = LicitacaoFeature(
+                licitacao_id=lic.id,
+                fonte=res.get('fonte') or "PNCP",
+                motivo_aprovacao=res.get('motivo_aprovacao'),
+                termos_encontrados=json.dumps(termos_hit) if termos_hit else None,
+                objeto_resumido=(res.get('objeto') or "")[:400]
+            )
+            session.add(feature)
+
             itens_api = res.get('_itens_preloaded', []) or self.client.buscar_itens(res)
+            
+            # --- DEEP SCAN DESABILITADO (causa lentidão extrema) ---
+            # O Deep Scan baixa PDFs e usa IA para extrair itens, mas:
+            # 1. Consome muitas requisições de IA (rate limit)
+            # 2. Leva 10-30s por PDF
+            # 3. A maioria das licitações já tem itens na API
+            # Para análise profunda, use a aba "🧠 Análise IA" no Dashboard
+            #
+            # deve_fazer_deep_scan = False
+            # if not itens_api:
+            #     deve_fazer_deep_scan = True
+            # ... (código removido para performance)
+
             itens_filtrados = self.filtrar_itens_negativos(itens_api, self.client.TERMOS_NEGATIVOS_PADRAO)
 
             for i in itens_filtrados:
-                # Price Intelligence: Tenta pegar preço médio se não vier no item
-                # (Isso seria lento para fazer em todos, vamos deixar sob demanda no dashboard ou async background job futuro)
-                # Por enquanto, salva o básico
+                # Normaliza campos (compatibilidade com diferentes fontes: API PNCP vs PDF Extractor)
+                numero = i.get('numero') or i.get('numero_item') or 0
+                valor_unit = i.get('valor_unitario') or i.get('valor_maximo') or 0
+                valor_est = i.get('valor_estimado') or i.get('valor_total') or 0
+                
                 session.add(ItemLicitacao(
                     licitacao_id=lic.id,
-                    numero_item=i['numero'],
-                    descricao=i['descricao'],
-                    quantidade=i['quantidade'],
-                    unidade=i['unidade'],
-                    valor_estimado=i['valor_estimado'],
-                    valor_unitario=i['valor_unitario']
+                    numero_item=numero,
+                    descricao=i.get('descricao', ''),
+                    quantidade=i.get('quantidade') or 0,
+                    unidade=i.get('unidade', 'UN'),
+                    valor_estimado=valor_est,
+                    valor_unitario=valor_unit
                 ))
             
             # SEMANTIC MATCHING
@@ -271,21 +354,21 @@ class SearchEngine:
             matched_products = list(set(matched_products))
 
             if matched_products:
-                high_priority_alerts.append({
+                alert_data = {
                     "orgao": res.get('orgao'),
                     "uf": res.get('uf'),
                     "matched_products": matched_products,
                     "dias_restantes": res.get('dias_restantes'),
                     "link": res.get('link')
-                })
+                }
+                # Envia alerta IMEDIATAMENTE (Fluxo Contínuo)
+                self.enviar_relatorio_whatsapp([alert_data], session)
+            
+            # Salva no banco IMEDIATAMENTE para aparecer no Dashboard
+            session.commit()
             novos += 1
 
-        session.commit()
         session.close()
         
-        if high_priority_alerts:
-            self.log(f"Enviando alerta para {len(high_priority_alerts)} oportunidades...", callback)
-            self.enviar_relatorio_whatsapp(high_priority_alerts, get_session())
-
         self.log(f"Processamento concluído. {novos} importados.", callback)
         return novos
