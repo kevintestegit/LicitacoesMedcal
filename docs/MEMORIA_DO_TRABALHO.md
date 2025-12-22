@@ -168,3 +168,22 @@ Solução:
 Para economizar quota diária do CallMeBot:
 - `modules/core/background_search.py`: chamada `_notify_completion()` comentada
 - Agora só envia notificações para **licitações reais** encontradas
+
+### 11) Backup e Restore do Sistema (Export/Import)
+
+Criada funcionalidade para exportar/importar todos os dados do sistema em um único arquivo ZIP:
+
+- `modules/utils/system_backup.py`:
+  - `export_backup()`: cria ZIP com todos os bancos e arquivos de dados
+  - `import_backup()`: extrai ZIP e substitui dados locais
+  - Força checkpoint WAL antes de exportar (dados atualizados)
+
+- UI em `dashboard.py` (aba Configurações):
+  - Botão "Gerar Backup" com download direto
+  - Upload de arquivo ZIP para restauração
+  - Lista de backups anteriores
+
+Arquivos incluídos no backup:
+- `data/medcal.db`, `data/financeiro.db`, `data/financeiro_historico.db`
+- `data/catalogo_produtos.json`, `data/whatsapp_notifications_sent.json`
+- Caches de embeddings e distância

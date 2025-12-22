@@ -2708,5 +2708,91 @@ elif page == "Configurações":
                     st.rerun()
                 else:
                     st.error("Preencha todos os campos obrigatórios.")
+    
+    st.divider()
+    
+    # --- Seção 3: Backup e Restore do Sistema ---
+    st.subheader("💾 Backup e Restore do Sistema")
+    st.markdown("""
+    Exporte todos os dados do sistema em um arquivo ZIP para transferir para outro computador,
+    ou importe um backup existente.
+    """)
+    
+    from modules.utils.system_backup import system_backup
+    
+    col_export, col_import = st.columns(2)
+    
+    with col_export:
+        st.markdown("### 📤 Exportar Backup")
+        
+        descricao_bk = st.text_input("Descrição (opcional)", placeholder="Ex: Backup antes de migração", key="desc_backup_sys")
+        
+        if st.button("🔄 Gerar Backup", type="primary", key="btn_gerar_backup"):
+            with st.spinner("Gerando backup..."):
+                resultado = system_backup.export_backup(description=descricao_bk)
+                
+                if resultado["sucesso"]:
+                    st.success(f"✅ Backup criado: {resultado['nome']}")
+                    st.caption(f"📊 Tamanho: {resultado['tamanho_mb']} MB")
+                    st.caption(f"📁 Arquivos: {len(resultado['arquivos_incluidos'])}")
+                    
+                    # Botão de download
+                    backup_bytes = system_backup.get_backup_bytes(resultado["nome"])
+                    if backup_bytes:
+                        st.download_button(
+                            label="📥 Baixar Backup",
+                            data=backup_bytes,
+                            file_name=resultado["nome"],
+                            mime="application/zip",
+                            key="download_backup_sys"
+                        )
+                else:
+                    st.error(f"❌ Erro: {resultado['erro']}")
+        
+        # Lista backups existentes
+        backups_existentes = system_backup.list_backups()
+        if backups_existentes:
+            with st.expander(f"📋 Backups anteriores ({len(backups_existentes)})", expanded=False):
+                for bk in backups_existentes[:5]:  # Mostra últimos 5
+                    bk_dt = datetime.fromisoformat(bk["datetime"])
+                    st.caption(f"📅 {bk_dt.strftime('%d/%m/%Y %H:%M')} - {bk['tamanho_mb']} MB")
+                    if bk.get("description"):
+                        st.caption(f"   _{bk['description']}_")
+    
+    with col_import:
+        st.markdown("### 📥 Importar Backup")
+        st.warning("⚠️ Isso substituirá TODOS os dados atuais!")
+        
+        uploaded_backup = st.file_uploader(
+            "Selecione o arquivo .zip de backup",
+            type=["zip"],
+            key="upload_backup_sys"
+        )
+        
+        if uploaded_backup:
+            st.info(f"📁 Arquivo: {uploaded_backup.name} ({round(uploaded_backup.size / 1024 / 1024, 2)} MB)")
+            
+            confirma = st.checkbox("Confirmo que desejo substituir todos os dados atuais", key="confirma_restore_sys")
+            
+            if st.button("♻️ Restaurar Backup", type="primary", disabled=not confirma, key="btn_restaurar_sys"):
+                with st.spinner("Restaurando backup..."):
+                    # Salva arquivo temporário
+                    import tempfile
+                    with tempfile.NamedTemporaryFile(delete=False, suffix=".zip") as tmp:
+                        tmp.write(uploaded_backup.getbuffer())
+                        tmp_path = tmp.name
+                    
+                    resultado = system_backup.import_backup(tmp_path)
+                    
+                    # Remove arquivo temporário
+                    import os
+                    os.unlink(tmp_path)
+                    
+                    if resultado["sucesso"]:
+                        st.success("✅ Backup restaurado com sucesso!")
+                        st.caption(f"📁 Arquivos restaurados: {len(resultado['arquivos_restaurados'])}")
+                        st.warning("🔄 Reinicie o sistema para aplicar as alterações.")
+                    else:
+                        st.error(f"❌ Erro: {resultado['erro']}")
                     
     session.close()
