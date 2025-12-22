@@ -58,12 +58,12 @@ def migrate():
     except Exception as e:
         print(f"Erro ao inserir termos: {e}")
 
-    # 3. Inserir API Key
+    # 3. Inserir API Key (OpenRouter)
     try:
-        cursor.execute("SELECT valor FROM configuracoes WHERE chave = 'gemini_api_key'")
+        cursor.execute("SELECT valor FROM configuracoes WHERE chave = 'openrouter_api_key'")
         if not cursor.fetchone():
             print("Inserindo placeholder API Key...")
-            cursor.execute("INSERT INTO configuracoes (chave, valor) VALUES (?, ?)", ('gemini_api_key', ''))
+            cursor.execute("INSERT INTO configuracoes (chave, valor) VALUES (?, ?)", ('openrouter_api_key', ''))
     except Exception as e:
         print(f"Erro API Key: {e}")
 

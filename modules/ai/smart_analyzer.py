@@ -69,7 +69,7 @@ class SmartAnalyzer:
 
         except Exception as e:
             logging.error(f"Erro na análise de IA: {e}")
-            print(f"⚠️ Falha na API Gemini ({e}). Tentando análise local...")
+            print(f"⚠️ Falha na IA ({e}). Tentando análise local...")
             return self._analise_local(texto_processar, lista_produtos)
 
     def _analise_local(self, texto: str, keywords_str: str) -> dict:

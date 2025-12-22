@@ -4,6 +4,9 @@ from modules.ai.semantic_filter import SemanticFilter
 from modules.ai.improved_matcher import SemanticMatcher
 from modules.ai.smart_analyzer import SmartAnalyzer
 from modules.ai.eligibility_checker import EligibilityChecker
+from modules.utils.logging_config import get_logger
+
+logger = get_logger(__name__)
 
 
 def _normalizar_matches(matches: List) -> List[Dict[str, Any]]:
@@ -29,14 +32,14 @@ def analisar_licitacao(licitacao: Dict[str, Any], texto_edital: str = "") -> Dic
         filtro = SemanticFilter()
         relevante = filtro.is_relevant(objeto)
     except Exception as exc:
-        print(f"[WARN] Filtro semantico indisponivel: {exc}")
+        logger.warning("Filtro semantico indisponivel: %s", exc, exc_info=True)
         relevante = True
 
     try:
         matcher = SemanticMatcher()
         matches = matcher.find_matches(objeto)
     except Exception as exc:
-        print(f"[WARN] Matcher indisponivel: {exc}")
+        logger.warning("Matcher indisponivel: %s", exc, exc_info=True)
         matches = []
     matches_norm = _normalizar_matches(matches)
 
@@ -44,7 +47,7 @@ def analisar_licitacao(licitacao: Dict[str, Any], texto_edital: str = "") -> Dic
         analyzer = SmartAnalyzer()
         viabilidade = analyzer.analisar_viabilidade(texto_edital or objeto)
     except Exception as exc:
-        print(f"[WARN] Analisador IA indisponivel: {exc}")
+        logger.warning("Analisador IA indisponivel: %s", exc, exc_info=True)
         viabilidade = {
             "resumo_objeto": objeto[:200],
             "score_viabilidade": 0,

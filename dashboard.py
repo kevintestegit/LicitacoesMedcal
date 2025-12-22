@@ -30,9 +30,10 @@ from modules.ai.improved_matcher import SemanticMatcher
 from modules.ai.licitacao_validator import validar_licitacao_com_ia  # Validador IA
 from modules.utils import importer # Import module instead of non-existent class
 from modules.utils.cnae_data import get_keywords_by_cnae
-from modules.ai.ai_config import configure_genai
+
 from modules.distance_calculator import get_road_distance # Importa calculador de distância
 from modules.core.search_engine import SearchEngine
+from modules.core.opportunity_collector import prepare_results_for_pipeline
 from modules.core.background_search import background_manager  # Busca em background
 from modules.core.deep_analyzer import deep_analyzer  # Análise profunda de licitações
 
@@ -41,11 +42,7 @@ init_db()
 init_finance_db()
 init_finance_historico_db()
 
-# Inicializa IA (tenta configurar se tiver chave)
-try:
-    configure_genai()
-except:
-    pass
+# IA: OpenRouter-only (configurado via Configurações)
 
 st.set_page_config(page_title="Medcal Licitações", layout="wide", page_icon="🏥", initial_sidebar_state="expanded")
 
@@ -627,7 +624,7 @@ def enviar_notificacao_scraper(resultados, fonte_nome):
 
 
 def processar_resultados(resultados_raw, notificar=False, fonte_nome=""):
-    """Processa, filtra, pontua e salva uma lista de resultados brutos."""
+    """Processa e salva uma lista de resultados brutos (pipeline consolidado)."""
     if not resultados_raw:
         st.warning("Nenhum resultado encontrado para processar.")
         return
@@ -636,193 +633,24 @@ def processar_resultados(resultados_raw, notificar=False, fonte_nome=""):
     if notificar and resultados_raw:
         enviar_notificacao_scraper(resultados_raw, fonte_nome)
 
-    session = get_session()
-    client = PNCPClient()
-    
-    # Carrega produtos para matching
-    prods = session.query(Produto).all()
-    
-    total_api = len(resultados_raw)
-    
-    # Filtro de Data de Início de Proposta (Pós-processamento)
-    resultados = []
-    hoje_date = datetime.now().date()
-    ignorados_data = 0
-    
-    for res in resultados_raw:
-        # REGRA SIMPLES: Mostra APENAS se ainda dá tempo de enviar proposta
-        # Critério: Data de FIM de proposta >= HOJE
+    resultados_preparados = prepare_results_for_pipeline(resultados_raw)
+    engine = SearchEngine()
+    details = engine.run_search_pipeline(resultados_preparados, return_details=True, send_immediate_alerts=False)
+    novos = int((details or {}).get("novos") or 0)
+    alerts = (details or {}).get("alerts") or []
 
-        encerramento_str = res.get('data_encerramento_proposta')
-        should_exclude = False
-
-        if encerramento_str:
-            try:
-                fim_dt = datetime.fromisoformat(encerramento_str).date()
-                # Se data de fim JÁ PASSOU → EXCLUI
-                if fim_dt < hoje_date:
-                    should_exclude = True
-            except:
-                # Se der erro ao parsear data, mantém (não exclui por segurança)
-                pass
-        else:
-            # Se NÃO tem data de encerramento:
-            # - Se for PNCP (sem 'origem' ou origem='PNCP'), exclui.
-            # - Se for Scraper Externo (tem 'origem' e != 'PNCP'), MANTÉM (pois scrapers de PDF não pegam data).
-            origem = res.get('origem')
-            if not origem or origem == 'PNCP':
-                should_exclude = True
-            else:
-                should_exclude = False # Mantém resultados de scrapers externos sem data
-
-        if should_exclude:
-            ignorados_data += 1
-            continue
-
-        # --- Lógica de Priorização (Match Score) ---
-        score = 0
-        matched_tags = []
-        obj_text = res['objeto']
-        obj_norm = normalize_text(obj_text)
-
-        # Termos positivos padrão no OBJETO (peso menor, apenas para score)
-        # NÃO usamos para matched_products - isso será feito nos ITENS
-        for t in client.TERMOS_POSITIVOS_PADRAO:
-            if normalize_text(t) in obj_norm:
-                score += 0.5
-
-        # Peso por urgência de prazo
-        dias_restantes = res.get('dias_restantes')
-        if dias_restantes in (None, -999) and res.get('data_encerramento_proposta'):
-            dias_restantes = client.calcular_dias(res.get('data_encerramento_proposta'))
-        res['dias_restantes'] = dias_restantes
-        if dias_restantes is not None and dias_restantes >= 0:
-            if dias_restantes <= 7:
-                score += 5
-            elif dias_restantes <= 14:
-                score += 3
-        
-        res['match_score'] = round(score, 1)
-        # matched_products será preenchido DEPOIS, quando buscarmos os itens reais
-        res['matched_products'] = []
-
-        resultados.append(res)
-
-    # Ordena por Score (Decrescente)
-    resultados.sort(key=lambda x: x.get('match_score', 0), reverse=True)
-
-    st.write(f"  Diagnóstico da Busca:")
-    st.write(f"- Encontrados na API: {total_api}")
-    st.write(f"- Ignorados pelo Filtro de Data (Passado): {ignorados_data}")
-    st.write(f"- Restantes para Importação: {len(resultados)}")
-    
-    # --- OTIMIZAÇÃO DE PERFORMANCE (ASYNC) ---
-    candidatos_novos = []
-    ignorados_duplicados = 0
-
-    # 1. Identifica APENAS o que é novo no banco
-    for res in resultados:
-        exists = session.query(Licitacao).filter_by(pncp_id=res['pncp_id']).first()
-        if not exists:
-            candidatos_novos.append(res)
-        else:
-            ignorados_duplicados += 1
-            
-    # 2. Busca itens em PARALELO (ThreadPool) apenas para os novos
-    if candidatos_novos:
-        st.info(f"🚀 Acelerando: Buscando itens de {len(candidatos_novos)} licitações simultaneamente...")
-        with concurrent.futures.ThreadPoolExecutor(max_workers=20) as executor:
-            # Mapeia future -> licitação
-            future_to_res = {executor.submit(client.buscar_itens, res): res for res in candidatos_novos}
-            
-            for future in concurrent.futures.as_completed(future_to_res):
-                res = future_to_res[future]
-                try:
-                    # Salva itens pré-carregados no dicionário
-                    res['_itens_preloaded'] = future.result()
-                except Exception as e:
-                    print(f"Erro ao buscar itens async: {e}")
-                    res['_itens_preloaded'] = []
-    
-    # Salvar no Banco (Sequencial, mas já com dados carregados)
-    novos = 0
-    high_priority_alerts = []
-    alert_threshold = 15
-    
-    for res in candidatos_novos:
-        lic = Licitacao(
-            pncp_id=res['pncp_id'],
-            orgao=res['orgao'],
-            uf=res['uf'],
-            modalidade=res['modalidade'],
-            data_sessao=safe_parse_date(res.get('data_sessao')),
-            data_publicacao=safe_parse_date(res.get('data_publicacao')),
-            data_inicio_proposta=safe_parse_date(res.get('data_inicio_proposta')),
-            data_encerramento_proposta=safe_parse_date(res.get('data_encerramento_proposta')),
-            objeto=res['objeto'],
-            link=res['link']
-        )
-        session.add(lic)
-        session.flush()
-
-        # Usa itens pré-carregados
-        itens_api = res.get('_itens_preloaded', [])
-        # Fallback caso algo tenha falhado na thread
-        if not itens_api and '_itens_preloaded' not in res:
-             itens_api = client.buscar_itens(res)
-
-        # Filtra termos negativos
-        itens_filtrados = filtrar_itens_negativos(itens_api, client.TERMOS_NEGATIVOS_PADRAO)
-        
-        for i in itens_filtrados:
-            item_db = ItemLicitacao(
-                licitacao_id=lic.id,
-                numero_item=i['numero'],
-                descricao=i['descricao'],
-                quantidade=i['quantidade'],
-                unidade=i['unidade'],
-                valor_estimado=i['valor_estimado'],
-                valor_unitario=i['valor_unitario']
-            )
-            session.add(item_db)
-        
-        # Faz match dos itens e coleta os produtos que deram match
-        match_itens(session, lic.id)
-        
-        # Busca os produtos que REALMENTE deram match nos ITENS (não no objeto)
-        matched_products_real = []
-        for item in session.query(ItemLicitacao).filter_by(licitacao_id=lic.id).all():
-            if item.produto_match_id and item.produto_match:
-                matched_products_real.append(item.produto_match.nome)
-        matched_products_real = list(set(matched_products_real))  # Remove duplicatas
-        
-        novos += 1
-
-        # Só adiciona ao alerta se tiver match REAL nos itens OU score alto
-        if matched_products_real or res.get('match_score', 0) >= alert_threshold:
-            high_priority_alerts.append({
-                "orgao": res.get('orgao'),
-                "uf": res.get('uf'),
-                "modalidade": res.get('modalidade'),
-                "match_score": res.get('match_score'),
-                "matched_products": matched_products_real,  # Agora vem dos ITENS!
-                "dias_restantes": res.get('dias_restantes'),
-                "data_encerramento_proposta": res.get('data_encerramento_proposta'),
-                "link": res.get('link')
-            })
-    
-    session.commit()
     st.success(f"Busca finalizada! {novos} novas licitações importadas.")
 
-    # === RELATÓRIO AUTOMÁTICO VIA WHATSAPP ===
-    if high_priority_alerts:
-        st.info(f"📱 Enviando relatório com {len(high_priority_alerts)} licitações relevantes...")
-        if enviar_relatorio_completo(high_priority_alerts, session):
-            st.success("✅ Relatório enviado via WhatsApp!")
-        else:
-            st.warning("⚠️ Não foi possível enviar relatório. Verifique as configurações de WhatsApp.")
-
-    session.close()
+    if alerts:
+        st.info(f"📱 Enviando relatório com {len(alerts)} licitações relevantes...")
+        session = get_session()
+        try:
+            if enviar_relatorio_completo(alerts, session):
+                st.success("✅ Relatório enviado via WhatsApp!")
+            else:
+                st.warning("⚠️ Não foi possível enviar relatório. Verifique as configurações de WhatsApp.")
+        finally:
+            session.close()
 
 # --- PÁGINAS ---
 
@@ -1290,7 +1118,7 @@ elif page == "Preparar Competição":
                                 st.success("✅ Análise concluída!")
                                 st.rerun()
                             else:
-                                st.error("❌ Erro na análise. Verifique se a API Key do Gemini está configurada.")
+                                st.error("❌ Erro na análise. Verifique se a IA (OpenRouter) está configurada.")
                 
                 with col_btn2:
                     if cached_analysis:
@@ -1444,7 +1272,7 @@ elif page == "🧠 Análise de IA":
                 st.write(f"**Link:** {lic.link}")
                 st.write(f"**Data:** {lic.data_publicacao}")
             
-            if st.button("🤖 Gerar Análise Completa (Gemini)"):
+            if st.button("🤖 Gerar Análise Completa (IA)"):
                 with st.spinner("A IA está lendo o edital e analisando viabilidade..."):
                     analyzer = SmartAnalyzer()
                     eligibility = EligibilityChecker()
@@ -2179,10 +2007,21 @@ elif page == "💰 Gestão Financeira":
             ExtratoBB.historico.ilike('%CUSTEIO SUS%')
         )
 
+        # Filtro de banco (001/748) se disponível; se banco vier vazio, não filtra
+        if session.query(ExtratoBB).filter(
+            ExtratoBB.mes_referencia == resumo_selecionado.mes,
+            ExtratoBB.ano_referencia == resumo_selecionado.ano,
+            ExtratoBB.banco.isnot(None)
+        ).count() > 0:
+            banco_filter = ExtratoBB.banco.in_(['001','748'])
+        else:
+            banco_filter = True
+
         total_sesap = session.query(func.sum(ExtratoBB.valor)).filter(
             ExtratoBB.mes_referencia == resumo_selecionado.mes,
             ExtratoBB.ano_referencia == resumo_selecionado.ano,
             sesap_condition,
+            banco_filter,
             not_(or_(ExtratoBB.historico.ilike('%12 SEC TES NAC%'), ExtratoBB.historico.ilike('%AEREA%')))
         ).scalar() or 0.0
 
@@ -2247,6 +2086,7 @@ elif page == "💰 Gestão Financeira":
                     ExtratoBB.mes_referencia == resumo_selecionado.mes,
                     ExtratoBB.ano_referencia == resumo_selecionado.ano,
                     sesap_condition,
+                    ExtratoBB.banco.in_(['001','748']),
                     ExtratoBB.valor > 0
                 ).scalar() or 0.0
 
@@ -2282,12 +2122,12 @@ elif page == "💰 Gestão Financeira":
                     st.info("Sem dados de entrada.")
 
         # --- Saídas ---
-        with col_comp2:
-            with st.expander("💸 Composição das Saídas (Despesas)", expanded=False):
-                # Nota: valor é negativo no banco, usamos abs para somar
-                composicao_sai = session.query(
-                    ExtratoBB.tipo, 
-                    func.sum(func.abs(ExtratoBB.valor))
+            with col_comp2:
+                with st.expander("💸 Composição das Saídas (Despesas)", expanded=False):
+                    # Nota: valor é negativo no banco, usamos abs para somar
+                    composicao_sai = session.query(
+                        ExtratoBB.tipo, 
+                        func.sum(func.abs(ExtratoBB.valor))
                 ).filter(
                     ExtratoBB.mes_referencia == resumo_selecionado.mes,
                     ExtratoBB.ano_referencia == resumo_selecionado.ano,
@@ -2765,47 +2605,25 @@ elif page == "Configurações":
     # --- Seção 1: Configuração IA ---
     st.subheader("🤖 Configuração da IA")
     st.markdown("""
-    Configure as chaves de API para IA. O sistema **prioriza OpenRouter** (modelos gratuitos ilimitados) 
-    e usa Gemini como fallback.
+    Configure a chave de API do OpenRouter (IA do sistema).
     """)
     
-    col_ai1, col_ai2 = st.columns(2)
-    
-    with col_ai1:
-        st.markdown("**🆓 OpenRouter (Recomendado - Gratuito)**")
-        st.caption("Modelos gratuitos sem limite de requisições")
+    st.markdown("**🆓 OpenRouter**")
+    st.caption("Modelos gratuitos disponíveis no OpenRouter (sujeitos às políticas do provedor)")
         
-        config_openrouter = session.query(Configuracao).filter_by(chave='openrouter_api_key').first()
-        if not config_openrouter:
-            config_openrouter = Configuracao(chave='openrouter_api_key', valor='')
-            session.add(config_openrouter)
-            session.commit()
+    config_openrouter = session.query(Configuracao).filter_by(chave='openrouter_api_key').first()
+    if not config_openrouter:
+        config_openrouter = Configuracao(chave='openrouter_api_key', valor='')
+        session.add(config_openrouter)
+        session.commit()
         
-        nova_openrouter_key = st.text_input("OpenRouter API Key", value=config_openrouter.valor, type="password", key="openrouter_key")
-        if st.button("Salvar OpenRouter Key"):
-            config_openrouter.valor = nova_openrouter_key
-            session.commit()
-            st.success("✅ OpenRouter Key salva!")
+    nova_openrouter_key = st.text_input("OpenRouter API Key", value=config_openrouter.valor, type="password", key="openrouter_key")
+    if st.button("Salvar OpenRouter Key"):
+        config_openrouter.valor = nova_openrouter_key
+        session.commit()
+        st.success("✅ OpenRouter Key salva!")
         
-        st.caption("Obtenha em: https://openrouter.ai/keys")
-    
-    with col_ai2:
-        st.markdown("**🔄 Gemini (Fallback)**")
-        st.caption("Usado se OpenRouter não estiver configurado")
-        
-        config_api_key = session.query(Configuracao).filter_by(chave='gemini_api_key').first()
-        if not config_api_key:
-            config_api_key = Configuracao(chave='gemini_api_key', valor='')
-            session.add(config_api_key)
-            session.commit()
-            
-        nova_key = st.text_input("Gemini API Key", value=config_api_key.valor, type="password", key="gemini_key")
-        if st.button("Salvar Gemini Key"):
-            config_api_key.valor = nova_key
-            session.commit()
-            st.success("✅ Gemini Key salva!")
-        
-        st.caption("Obtenha em: https://aistudio.google.com/apikey")
+    st.caption("Obtenha em: https://openrouter.ai/keys")
         
     st.divider()
         

@@ -1,6 +1,6 @@
 from datetime import datetime
 import json
-from typing import Any, Dict, List
+from typing import Any, Dict, Iterable, List
 
 from modules.database.database import AlertSent, Configuracao, get_session
 from modules.utils.notifications import WhatsAppNotifier

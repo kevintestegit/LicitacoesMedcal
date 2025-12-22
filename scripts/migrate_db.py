@@ -22,11 +22,11 @@ def migrate():
     else:
         print("Configuração de termos já existe.")
 
-    # 2. Configuração de API Key (Placeholder)
-    config_api = session.query(Configuracao).filter_by(chave='gemini_api_key').first()
+    # 2. Configuração de API Key (OpenRouter)
+    config_api = session.query(Configuracao).filter_by(chave='openrouter_api_key').first()
     if not config_api:
-        print("Criando placeholder para Gemini API Key...")
-        session.add(Configuracao(chave='gemini_api_key', valor=''))
+        print("Criando placeholder para OpenRouter API Key...")
+        session.add(Configuracao(chave='openrouter_api_key', valor=''))
 
     # 3. Configuração de WhatsApp (Placeholder)
     config_wpp_phone = session.query(Configuracao).filter_by(chave='whatsapp_phone').first()

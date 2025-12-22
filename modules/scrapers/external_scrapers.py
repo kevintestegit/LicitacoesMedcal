@@ -7,10 +7,11 @@ from pypdf import PdfReader
 import re
 import unicodedata
 import json
-import google.generativeai as genai
 import urllib3
 from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
+from modules.utils.logging_config import get_logger
+from modules.ai.ai_config import get_model
 
 # Suprime avisos de SSL inseguro (comuns em sites de diários municipais)
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
@@ -32,6 +33,8 @@ class DiarioMunicipalScraper(ExternalScraper):
         self.BASE_URL = base_url
         self.UF = uf
         self.ORIGEM = origem_nome
+        self._logger = get_logger(self.__class__.__name__)
+        self.enrich_enabled = True
         
         # Configura sessão com retries para maior robustez
         self.session = requests.Session()
@@ -62,17 +65,11 @@ class DiarioMunicipalScraper(ExternalScraper):
         return None
 
     def _enrich_with_ai(self, texto_aviso):
-        """Usa Gemini para extrair itens e resumir objeto"""
+        """Enriquece aviso com IA via OpenRouter (get_model)."""
+        if not self.enrich_enabled:
+            return None
         try:
-            session = get_session()
-            config = session.query(Configuracao).filter_by(chave='gemini_api_key').first()
-            session.close()
-            
-            if not config or not config.valor:
-                return None
-
-            genai.configure(api_key=config.valor)
-            model = genai.GenerativeModel('gemini-2.0-flash')
+            model = get_model(temperature=0.1)
             
             prompt = f"""
             Analise o seguinte aviso de licitação extraído de um Diário Oficial.
@@ -104,7 +101,10 @@ class DiarioMunicipalScraper(ExternalScraper):
             return data
             
         except Exception as e:
-            print(f"Erro na IA (Enrich): {e}")
+            self._logger.warning("Erro na IA (Enrich): %s", e, exc_info=True)
+            if "quota" in str(e).lower() or "429" in str(e):
+                self.enrich_enabled = False
+                self._logger.info("Enrich desativado apos quota/rate limit.")
             return None
 
     def buscar_oportunidades(self, termos_busca=None, termos_negativos=None):
@@ -208,6 +208,50 @@ class DiarioMunicipalScraper(ExternalScraper):
                         return True
                 return False
 
+            def eh_publicacao_com_vencedor_ou_resultado(txt_norm: str) -> bool:
+                """
+                Diários municipais misturam editais de abertura com atos de resultado/homologação/adjudicação.
+                Para o pipeline de oportunidades, queremos apenas ABERTURA (prazo ainda faz sentido).
+                """
+                if not txt_norm:
+                    return False
+
+                marcadores_fortes = [
+                    "AVISO DE RESULTADO",
+                    "AVISO DO RESULTADO",
+                    "RESULTADO DO PREGAO",
+                    "RESULTADO DO PREGÃO",
+                    "RESULTADO DE JULGAMENTO",
+                    "HOMOLOGACAO",
+                    "HOMOLOGAÇÃO",
+                    "ADJUDICACAO",
+                    "ADJUDICAÇÃO",
+                    "TERMO DE HOMOLOGACAO",
+                    "TERMO DE HOMOLOGAÇÃO",
+                    "TERMO DE ADJUDICACAO",
+                    "TERMO DE ADJUDICAÇÃO",
+                    "EMPRESA VENCEDORA",
+                    "EMPRESAS VENCEDORAS",
+                    "EMPRESA(S) VENCEDORA(S)",
+                    "VENCEDOR",
+                    "VENCEDORES",
+                    "ATA DE REGISTRO DE PRECO",
+                    "ATA DE REGISTRO DE PREÇO",
+                    "EXTRATO DE CONTRATO",
+                    "EXTRATO DO CONTRATO",
+                ]
+                if any(m in txt_norm for m in marcadores_fortes):
+                    return True
+
+                # Padrões comuns no corpo: "VENCEDOR: X", "EMPRESAS VENCEDORAS: X"
+                padroes = [
+                    r"\bVENCEDOR(?:A|ES)?\b\s*[:\-]",
+                    r"\bEMPRESAS?\s+VENCEDORAS?\b\s*[:\-]",
+                    r"\bVALOR\s+TOTAL\b",
+                    r"\bCNPJ\b\s*[:\-]?\s*\d{2}\.?\d{3}\.?\d{3}/?\d{4}\-?\d{2}",
+                ]
+                return any(re.search(p, txt_norm, re.IGNORECASE) for p in padroes)
+
             # Tenta dividir por diferentes padrões de separador
             separadores = [
                 r'(CODIGO IDENTIFICADOR:\s*[\w\d]+)',
@@ -234,7 +278,11 @@ class DiarioMunicipalScraper(ExternalScraper):
                 # PDF não foi dividido - processa inteiro buscando licitações
                 print(f"[{self.ORIGEM}] PDF não dividido - buscando no texto completo...")
                 
-                if eh_licitacao_aberta(text_normalized) and tem_termo_positivo(text_normalized):
+                if (
+                    eh_licitacao_aberta(text_normalized)
+                    and tem_termo_positivo(text_normalized)
+                    and not eh_publicacao_com_vencedor_ou_resultado(text_normalized)
+                ):
                     if not tem_termo_negativo(text_normalized):
                         # Encontra todos os avisos de licitação no texto
                         avisos = re.findall(
@@ -245,7 +293,11 @@ class DiarioMunicipalScraper(ExternalScraper):
                         
                         if avisos:
                             for idx, aviso in enumerate(avisos):
-                                if tem_termo_positivo(aviso) and not tem_termo_negativo(aviso):
+                                if (
+                                    tem_termo_positivo(aviso)
+                                    and not tem_termo_negativo(aviso)
+                                    and not eh_publicacao_com_vencedor_ou_resultado(aviso)
+                                ):
                                     # Extrai nome do órgão
                                     orgao_match = re.search(r'PREFEITURA MUNICIPAL (?:DE|DA|DO)\s+([A-Z]+)', aviso)
                                     orgao_name = f"Prefeitura de {orgao_match.group(1)}" if orgao_match else f"Municipio {self.UF}"
@@ -257,7 +309,7 @@ class DiarioMunicipalScraper(ExternalScraper):
                                         "modalidade": "Pregao" if "PREGAO" in aviso else "Diario Oficial",
                                         "data_sessao": datetime.now().isoformat(),
                                         "data_publicacao": datetime.now().isoformat(),
-                                        "objeto": aviso[:2000],
+                                        "objeto": aviso[:8000],
                                         "link": pdf_url,
                                         "itens": [],
                                         "origem": self.ORIGEM
@@ -291,6 +343,10 @@ class DiarioMunicipalScraper(ExternalScraper):
 
                     if not eh_licitacao_aberta(full_notice_norm):
                         continue
+
+                    # Ignora atos que já indicam resultado/vencedor/homologação/adjudicação
+                    if eh_publicacao_com_vencedor_ou_resultado(full_notice_norm):
+                        continue
                     
                     avisos_licitacao += 1
                     
@@ -299,68 +355,40 @@ class DiarioMunicipalScraper(ExternalScraper):
                     
                     avisos_positivos += 1
                     
-                    # Sincroniza com a lista robusta do PNCP e adiciona termos específicos de Diários Oficiais
-                    termos_negativos_diario = list(PNCPClient.TERMOS_NEGATIVOS_PADRAO)
+                    # Negativos em diários: use a lista recebida do chamador (ou fallback PNCP).
+                    # Importante: evitar "negativos administrativos" aqui (PORTARIA/DECRETO/LEI/ERRATA etc),
+                    # pois já são tratados por `eh_publicacao_com_vencedor_ou_resultado`/`termos_documento_invalido`
+                    # e costumam derrubar avisos bons por falso positivo.
+                    termos_negativos_diario = list(termos_negativos or PNCPClient.TERMOS_NEGATIVOS_PADRAO)
                     
-                    # Adiciona termos específicos que poluem Diários Oficiais (atos administrativos)
-                    termos_negativos_diario.extend([
-                        # Documentos administrativos (não são editais de abertura)
-                        "INEXIGIBILIDADE",
-                        "EXTRATO DE CONTRATO",
-                        "EXTRATO DO CONTRATO", 
-                        "EXTRATO DE ADITIVO",
-                        "TERMO ADITIVO",
-                        "HOMOLOGACAO",
-                        "ADJUDICACAO",
-                        "RATIFICACAO",
-                        "RESULTADO DE JULGAMENTO",
-                        "RESULTADO DO JULGAMENTO",
-                        "RESCISAO DE CONTRATO",
-                        "PENALIDADE",
-                        "MULTA APLICADA",
-                        "NOTIFICACAO DE",
-                        "PORTARIA N",
-                        "DECRETO N",
-                        "LEI MUNICIPAL",
-                        "ERRATA",
-                        "RETIFICACAO",
-                        
-                        # Serviços que não interessam (Mão de Obra e Serviços Contínuos)
-                        "MAO DE OBRA", 
-                        "SERVICOS CONTINUOS", 
-                        "DEDICACAO EXCLUSIVA",
-                        "LOCACAO DE MAO DE OBRA",
-                        "TERCEIRIZACAO DE MAO DE OBRA",
-                        "APOIO ADMINISTRATIVO",
-                        "RECEPCIONISTA",
-                        "MOTORISTA",
-                        "COPEIRA",
-                        "SERVENTE",
-                        
-                        # Termos extras para garantir limpeza
-                        "CONSULTORIA", "ASSESSORIA", "VIAGEM", "HOSPEDAGEM", "PASSAGEM",
-                        "SHOW", "FESTA", "EVENTO", "PALCO", "SONORIZACAO",
-
-                        # Termos específicos de Odontologia para reforçar bloqueio
-                        "CONSULTORIO ODONTOLOGICO",
-                        "CLINICA ODONTOLOGICA",
-                        "MANUTENCAO ODONTOLOGICA",
-                        "REPARO ODONTOLOGICO",
-                        "EQUIPAMENTOS ODONTOLOGICOS",
-                        "CADEIRA ODONTOLOGICA",
-
-                        # Termos específicos de Material de Expediente/Papelaria
-                        "PAPELARIA",
-                        "RESMA DE PAPEL",
-                        "CANETA",
-                        "LAPIS",
-                        "BLOCO DE ANOTACOES",
-                        "CADERNO",
-                        "GRAMPEADOR",
-                        "PERFURADOR",
-                        "CLIPE",
-                        "PASTA ARQUIVO"
-                    ])
+                    # Complementos específicos de Diários Oficiais (ruídos comuns que ainda passam pelo gate).
+                    termos_negativos_diario.extend(
+                        [
+                            # Serviços/contratações genéricas que costumam gerar falso positivo com "SAÚDE"
+                            "CONSULTORIA",
+                            "ASSESSORIA",
+                            # Viagens/eventos (ruído)
+                            "VIAGEM",
+                            "HOSPEDAGEM",
+                            "PASSAGEM",
+                            "SHOW",
+                            "FESTA",
+                            "EVENTO",
+                            "PALCO",
+                            "SONORIZACAO",
+                            # Papelaria/expediente (ruído)
+                            "PAPELARIA",
+                            "RESMA DE PAPEL",
+                            "CANETA",
+                            "LAPIS",
+                            "BLOCO DE ANOTACOES",
+                            "CADERNO",
+                            "GRAMPEADOR",
+                            "PERFURADOR",
+                            "CLIPE",
+                            "PASTA ARQUIVO",
+                        ]
+                    )
                     
                     # Normaliza para comparação
                     termos_negativos_diario_norm = [normalize_text(t) for t in termos_negativos_diario]

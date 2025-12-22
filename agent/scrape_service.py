@@ -1,31 +1,16 @@
 import hashlib
+import time
 from datetime import datetime, date
 from typing import Any, Dict, List
 
 from modules.scrapers.pncp_client import PNCPClient
-from modules.scrapers.external_scrapers import (
-    FemurnScraper,
-    FamupScraper,
-    AmupeScraper,
-    AmaScraper,
-    MaceioScraper,
-    MaceioInvesteScraper,
-    MaceioSaudeScraper,
-)
+from modules.core.opportunity_collector import collect_opportunities
+from modules.utils.logging_config import get_logger
 
 # Modalidades alvo (PNCP): 6, 8, 12 => Pregao/Dispensa/Emergencial
 _MODALIDADE_KEYWORDS = ("PREG", "DISPENSA", "EMERG")
 
-# Scrapers externos configurados
-DEFAULT_EXTERNAL_SCRAPERS = (
-    FemurnScraper,
-    FamupScraper,
-    AmupeScraper,
-    AmaScraper,
-    MaceioScraper,
-    MaceioInvesteScraper,
-    MaceioSaudeScraper,
-)
+logger = get_logger(__name__)
 
 
 def _to_datetime(value: Any) -> datetime | None:
@@ -81,6 +66,19 @@ def _normalize_entry(raw: Dict[str, Any], origem: str) -> Dict[str, Any]:
     return normalized
 
 
+def _retry(fn, *, attempts=3, backoff=1.5, label=""):
+    for idx in range(1, attempts + 1):
+        try:
+            return fn()
+        except Exception as exc:
+            if idx == attempts:
+                logger.warning("Falha definitiva em %s: %s", label or fn.__name__, exc)
+                raise
+            wait = round(backoff * idx, 2)
+            logger.warning("Erro em %s (tentativa %s/%s): %s. Retentando em %ss", label or fn.__name__, idx, attempts, exc, wait)
+            time.sleep(wait)
+
+
 def coletar_licitacoes(filtros_base: Dict[str, Any] | None = None) -> List[Dict[str, Any]]:
     """
     Coleta licitacoes do PNCP e diarios externos, aplicando dedupe e regra de prazo.
@@ -89,48 +87,42 @@ def coletar_licitacoes(filtros_base: Dict[str, Any] | None = None) -> List[Dict[
     filtros = filtros_base or {}
     hoje = date.today()
 
-    # --- PNCP ---
     pncp_client = PNCPClient()
     termos_positivos = filtros.get("termos_positivos") or getattr(pncp_client, "TERMOS_POSITIVOS_PADRAO", [])
     termos_negativos = filtros.get("termos_negativos")
     estados = filtros.get("estados") or ["RN", "PB", "PE", "AL", "CE", "BA"]
     dias_busca = filtros.get("dias") or 30
+    fontes = filtros.get("fontes")
 
-    pncp_raw = pncp_client.buscar_oportunidades(
-        dias_busca=dias_busca,
+    coletados = collect_opportunities(
+        dias=dias_busca,
         estados=estados,
+        fontes=fontes,
         termos_positivos=termos_positivos,
         termos_negativos=termos_negativos,
         apenas_abertas=True,
     )
 
-    pncp_normalized = []
-    for lic in pncp_raw:
-        lic_norm = _normalize_entry(lic, origem="PNCP")
-        if not _modalidade_valida(lic_norm.get("modalidade", "")):
+    consolidados_norm: List[Dict[str, Any]] = []
+    for lic in coletados:
+        origem = lic.get("origem") or lic.get("fonte") or "EXTERNO"
+        lic_norm = _normalize_entry(lic, origem=str(origem))
+        if not lic_norm["objeto"]:
             continue
+
+        # Filtro de modalidade é confiável no PNCP; em diários, o campo pode não existir.
+        if str(origem).upper() == "PNCP" and not _modalidade_valida(lic_norm.get("modalidade", "")):
+            continue
+
         if not _prazo_aberto(lic_norm.get("data_encerramento_proposta"), hoje):
             continue
-        pncp_normalized.append(lic_norm)
 
-    # --- Diarios / scrapers externos ---
-    externos_normalized: List[Dict[str, Any]] = []
-    termos_busca_ext = filtros.get("termos_positivos") or getattr(pncp_client, "TERMOS_POSITIVOS_PADRAO", [])
-    for scraper_cls in DEFAULT_EXTERNAL_SCRAPERS:
-        try:
-            scraper = scraper_cls()
-            externos_raw = scraper.buscar_oportunidades(termos_busca=termos_busca_ext, termos_negativos=termos_negativos)
-            for lic in externos_raw:
-                lic_norm = _normalize_entry(lic, origem=getattr(scraper, "ORIGEM", "EXTERNO"))
-                if lic_norm["objeto"]:
-                    externos_normalized.append(lic_norm)
-        except Exception as exc:
-            print(f"[WARN] Falha no scraper {scraper_cls.__name__}: {exc}")
+        consolidados_norm.append(lic_norm)
 
     # --- Dedupe ---
     vistos = set()
     consolidados: List[Dict[str, Any]] = []
-    for lic in (*pncp_normalized, *externos_normalized):
+    for lic in consolidados_norm:
         key = lic.get("dedupe_key")
         if not key or key in vistos:
             continue

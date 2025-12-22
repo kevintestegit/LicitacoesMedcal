@@ -3,7 +3,7 @@ Modelo de banco de dados para extratos bancários do Banco do Brasil
 Estrutura simplificada baseada no formato de extrato padrão BB
 """
 
-from sqlalchemy import Column, Integer, String, Float, DateTime, Boolean, Text, Date
+from sqlalchemy import Column, Integer, String, Float, DateTime, Boolean, Text, Date, JSON
 from datetime import datetime
 
 # Importa Base do módulo financeiro dedicado
@@ -40,6 +40,7 @@ class ExtratoBB(Base):
     arquivo_origem = Column(String(255))  # Nome do arquivo importado
     hash_lancamento = Column(String(64), unique=True)  # Para evitar duplicatas
     observacoes = Column(Text)
+    banco = Column(String(10))  # 001 BB, 748 Sicredi, etc.
 
     def __repr__(self):
         status_emoji = "✅" if self.status == "Baixado" else "⏳"
@@ -127,3 +128,18 @@ class SesapPagamento(Base):
 
     def __repr__(self):
         return f"<SesapPagamento({self.num_doc or '?'} | R$ {self.valor_liquido or 0:.2f} | {self.status_sesap or 'N/A'})>"
+
+
+class FinanceAuditLog(Base):
+    """
+    Trilhas de auditoria para importações/conciliações financeiras.
+    """
+    __tablename__ = 'finance_audit_logs'
+
+    id = Column(Integer, primary_key=True)
+    created_at = Column(DateTime, default=datetime.now)
+    event_type = Column(String(50), nullable=False)  # ex.: import, dedupe, resumo
+    source = Column(String(255), nullable=True)      # arquivo/rotina
+    reference = Column(String(255), nullable=True)   # hash, fatura, doc
+    message = Column(Text, nullable=False)
+    meta = Column(JSON, nullable=True)               # payload auxiliar (counts, valores)

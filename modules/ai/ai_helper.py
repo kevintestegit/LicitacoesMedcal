@@ -1,9 +1,8 @@
-from .ai_config import get_model, configure_genai
-import os
+from .ai_config import get_model
 
 def summarize_bidding(licitacao_obj, itens_list):
     """
-    Gera um resumo estratégico da licitação usando IA (OpenRouter/Gemini).
+    Gera um resumo estratégico da licitação usando IA (OpenRouter).
     """
     try:
         model = get_model(temperature=0.3)
@@ -54,23 +53,9 @@ def get_google_price_estimate(item_description):
         for url in search(query, num_results=5, lang="pt"):
             results.append(url)
             
-        # Nota: O googlesearch-python só retorna URLs. 
-        # Para pegar o preço real, precisaríamos entrar em cada site (lento) ou usar a API Custom Search do Google (paga/limitada).
-        # Como alternativa rápida e sem custo extra, vamos usar o Gemini para "adivinhar" com base no conhecimento dele,
-        # mas agora informando que é uma estimativa de IA, já que a busca web real de preços é complexa sem API de Shopping.
-        
-        # Porém, o usuário pediu: "basta colocar no google preço {item} e o valor que retornar será uma base."
-        # Se ele quer o valor que o Google *mostra* no snippet, precisaríamos de um scraper de SERP (Search Engine Results Page).
-        # O `googlesearch-python` não dá o snippet/texto, só a URL.
-        
-        # Vamos manter a estratégia do Gemini por enquanto, mas melhorando o prompt para ser mais "mercado atual",
-        # ou tentar extrair preços se tivermos acesso ao conteúdo da página (o que seria lento).
-        
-        # MELHOR ABORDAGEM AGORA: Usar o Gemini para estimar, mas explicitando que é uma referência.
-        # Se quisermos algo real do Google, precisaríamos de uma lib como `google-search-results` (SerpApi - paga) ou fazer scraping do HTML do Google (arriscado de bloqueio).
-        
-        # Vou manter a implementação via IA por ser mais robusta e rápida para o MVP, 
-        # mas vou ajustar o nome para ficar claro.
+        # Nota: O googlesearch-python só retorna URLs (sem snippet/preço).
+        # Para um preço "real" do Google seria necessário scraping de SERP ou API paga.
+        # Aqui usamos IA (OpenRouter) apenas como referência rápida.
         
         return estimate_market_price_ai(item_description)
 
@@ -79,7 +64,7 @@ def get_google_price_estimate(item_description):
 
 def estimate_market_price_ai(item_description):
     """
-    Estima preço usando o Gemini (rápido e sem risco de bloqueio de IP do Google).
+    Estima preço usando IA via OpenRouter.
     """
     try:
         model = get_model(temperature=0.3)
@@ -93,7 +78,7 @@ Se não tiver ideia, responda "Preço desconhecido".
 """
         response = model.generate_content(prompt)
         return response.text.strip()
-    except:
+    except Exception:
         return "N/A"
 
 # Mantemos a função antiga como alias para compatibilidade, se necessário

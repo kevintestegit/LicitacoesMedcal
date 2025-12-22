@@ -517,6 +517,9 @@ class ExtratoBBParser:
 
         return {'lancamentos': lancamentos, 'resumos': resumos, 'total_lancamentos': len(lancamentos), 'erros': self.erros, 'avisos': self.avisos}
 
+from .audit import log_finance_event
+
+
 def salvar_extrato_db(session, resultado: Dict) -> Dict:
     from .bank_models import ExtratoBB, ResumoMensal
 
@@ -543,6 +546,17 @@ def salvar_extrato_db(session, resultado: Dict) -> Dict:
             session.add(resumo_db)
     
     session.commit()
+    try:
+        log_finance_event(
+            session,
+            event_type="import",
+            message=f"Importação concluída: {stats['importados']} novos, {stats['duplicados']} duplicados",
+            source=resultado.get('fonte'),
+            meta={'erros': len(stats['erros']), 'avisos': len(stats['avisos'])},
+        )
+        session.commit()
+    except Exception:
+        session.rollback()
     return stats
 
 def importar_extrato_bb(file_path: str, session, ano: int = None) -> Dict:

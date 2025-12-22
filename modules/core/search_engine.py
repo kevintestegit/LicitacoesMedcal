@@ -1,17 +1,17 @@
 import concurrent.futures
 from datetime import datetime
-import time
 import unicodedata
-from rapidfuzz import fuzz
-from sqlalchemy import or_
 import json
 
 from modules.database.database import get_session, Licitacao, ItemLicitacao, Produto, Configuracao, LicitacaoFeature
 from modules.scrapers.pncp_client import PNCPClient
 from modules.ai.improved_matcher import SemanticMatcher
 from modules.utils.notifications import WhatsAppNotifier
-from modules.scrapers.external_scrapers import FemurnScraper, FamupScraper, AmupeScraper, AmaScraper, MaceioScraper, MaceioInvesteScraper, MaceioSaudeScraper, BncScraper
-from modules.scrapers.pdf_extractor import PDFExtractor
+from modules.utils.notification_cache import notification_cache
+from modules.core.opportunity_collector import collect_opportunities
+from modules.utils.logging_config import get_logger
+
+logger = get_logger(__name__)
 
 def normalize_text(texto: str) -> str:
     if not texto:
@@ -19,6 +19,8 @@ def normalize_text(texto: str) -> str:
     return unicodedata.normalize('NFKD', texto).encode('ASCII', 'ignore').decode('ASCII').upper()
 
 def safe_parse_date(date_str):
+    if isinstance(date_str, datetime):
+        return date_str
     if not date_str or not isinstance(date_str, str) or date_str.strip() == "":
         return None
     try:
@@ -35,7 +37,7 @@ class SearchEngine:
         if callback:
             callback(msg)
         else:
-            print(f"[ENGINE] {msg}")
+            logger.info(msg)
 
     def match_itens(self, session, licitacao_id, limiar=75):
         """
@@ -153,105 +155,36 @@ class SearchEngine:
             callback: Função de callback para logs
         """
         self.log(f"Iniciando varredura. Dias={dias}, Estados={estados}, Fontes={fontes or 'TODAS'}...", callback)
-        resultados_raw = []
-        
-        # Definição das tarefas para execução paralela
-        # NOTA: Não usamos 'callback' (UI) dentro das threads para evitar erro de Contexto do Streamlit
-        
-        def fetch_pncp():
-            try:
-                return self.client.buscar_oportunidades(dias, estados, termos_positivos=self.client.TERMOS_POSITIVOS_PADRAO)
-            except Exception as e:
-                print(f"Erro PNCP: {e}")
-                return []
-
-        scrapers_map = {
-            'femurn': (FemurnScraper, "FEMURN"),
-            'famup': (FamupScraper, "FAMUP"),
-            'amupe': (AmupeScraper, "AMUPE"),
-            'ama': (AmaScraper, "AMA"),
-            'maceio': (MaceioScraper, "Maceió"),
-            'maceio_investe': (MaceioInvesteScraper, "Maceió Investe"),
-            'maceio_saude': (MaceioSaudeScraper, "Maceió Saúde"),
-            'bnc': (BncScraper, "BNC")
-        }
-        
-        def fetch_external(ScraperCls, name):
-            try:
-                scraper = ScraperCls()
-                # BNC usa UF explicitamente; passa lista de estados
-                if name == "BNC":
-                    return scraper.buscar_oportunidades(self.client.TERMOS_POSITIVOS_PADRAO, self.client.TERMOS_NEGATIVOS_PADRAO, estados=estados)
-                return scraper.buscar_oportunidades(self.client.TERMOS_POSITIVOS_PADRAO, self.client.TERMOS_NEGATIVOS_PADRAO)
-            except Exception as e:
-                print(f"Erro {name}: {e}")
-                return []
-
-        # Determina quais fontes usar
-        usar_pncp = fontes is None or 'pncp' in fontes
-        
-        scrapers_ativos = []
-        if fontes is None:
-            # Usa todos os scrapers
-            scrapers_ativos = list(scrapers_map.values())
-        else:
-            # Usa apenas os selecionados
-            for key, value in scrapers_map.items():
-                if key in fontes:
-                    scrapers_ativos.append(value)
-        
-        total_fontes = (1 if usar_pncp else 0) + len(scrapers_ativos)
-        self.log(f"Disparando busca em {total_fontes} fonte(s)...", callback)
-        
-        with concurrent.futures.ThreadPoolExecutor(max_workers=10) as executor:
-            tasks = []
-            
-            # 1. Dispara PNCP (se selecionado)
-            if usar_pncp:
-                tasks.append(executor.submit(fetch_pncp))
-            
-            # 2. Dispara Externos (apenas os selecionados)
-            for ScraperCls, name in scrapers_ativos:
-                tasks.append(executor.submit(fetch_external, ScraperCls, name))
-            
-            # 3. Coleta resultados
-            completed_count = 0
-            total_tasks = len(tasks)
-            
-            for future in concurrent.futures.as_completed(tasks):
-                completed_count += 1
-                try:
-                    res = future.result()
-                    if res:
-                        resultados_raw.extend(res)
-                        self.log(f"Fonte {completed_count}/{total_tasks} finalizada (+{len(res)} itens)", callback)
-                    else:
-                        self.log(f"Fonte {completed_count}/{total_tasks} finalizada (sem itens)", callback)
-                except Exception as e:
-                    self.log(f"Erro fatal em thread de busca: {e}", callback)
-                
-        self.log(f"Total de oportunidades encontradas: {len(resultados_raw)}", callback)
-        
+        resultados_raw = collect_opportunities(
+            dias=dias,
+            estados=estados,
+            fontes=fontes,
+            termos_positivos=self.client.TERMOS_POSITIVOS_PADRAO,
+            termos_negativos=self.client.TERMOS_NEGATIVOS_PADRAO,
+            apenas_abertas=True,
+        )
+        self.log(f"Total de oportunidades encontradas (dedupe aplicado): {len(resultados_raw)}", callback)
         return self.run_search_pipeline(resultados_raw, callback)
 
-    def run_search_pipeline(self, resultados_raw, callback=None):
+    def run_search_pipeline(self, resultados_raw, callback=None, *, return_details: bool = False, send_immediate_alerts: bool = True):
         """
         Executa o pipeline completo: Filtro -> Async Fetch -> Save -> Match -> Alert
         """
         self.log("Iniciando pipeline de processamento...", callback)
         session = get_session()
+        high_priority_alerts = []
         
         # 1. Filtro Data
         resultados = []
         hoje_date = datetime.now().date()
         for res in resultados_raw:
-            enc_str = res.get('data_encerramento_proposta')
-            if enc_str:
-                try:
-                    if datetime.fromisoformat(enc_str).date() < hoje_date:
-                        continue
-                except:
-                    pass
+            enc_dt = safe_parse_date(res.get('data_encerramento_proposta'))
+            if enc_dt and enc_dt.date() < hoje_date:
+                continue
+            if not enc_dt:
+                origem = res.get("origem") or res.get("fonte")
+                if not origem or str(origem).upper() == "PNCP":
+                    continue
             
             # Score preliminar
             score = 0
@@ -263,7 +196,10 @@ class SearchEngine:
         # 2. Identifica Novos
         candidatos_novos = []
         for res in resultados:
-            exists = session.query(Licitacao).filter_by(pncp_id=res['pncp_id']).first()
+            pncp_id = res.get("pncp_id")
+            if not pncp_id:
+                continue
+            exists = session.query(Licitacao).filter_by(pncp_id=pncp_id).first()
             if not exists:
                 candidatos_novos.append(res)
 
@@ -272,30 +208,37 @@ class SearchEngine:
         # 3. Async Fetch
         if candidatos_novos:
             with concurrent.futures.ThreadPoolExecutor(max_workers=20) as executor:
-                future_to_res = {executor.submit(self.client.buscar_itens, res): res for res in candidatos_novos}
+                pncp_candidates = [
+                    r
+                    for r in candidatos_novos
+                    if not (r.get("itens") or [])
+                    and r.get("cnpj")
+                    and r.get("ano")
+                    and r.get("seq")
+                ]
+                future_to_res = {executor.submit(self.client.buscar_itens, res): res for res in pncp_candidates}
                 for future in concurrent.futures.as_completed(future_to_res):
                     res = future_to_res[future]
                     try:
                         res['_itens_preloaded'] = future.result()
-                    except:
+                    except Exception as exc:
+                        logger.warning("Erro ao pré-carregar itens para %s: %s", res.get('pncp_id'), exc, exc_info=True)
                         res['_itens_preloaded'] = []
 
         # 4. Salvar e Match
         novos = 0
-        high_priority_alerts = []
-        
         for res in candidatos_novos:
             lic = Licitacao(
                 pncp_id=res['pncp_id'],
-                orgao=res['orgao'],
-                uf=res['uf'],
-                modalidade=res['modalidade'],
+                orgao=res.get('orgao'),
+                uf=res.get('uf'),
+                modalidade=res.get('modalidade'),
                 data_sessao=safe_parse_date(res.get('data_sessao')),
                 data_publicacao=safe_parse_date(res.get('data_publicacao')),
                 data_inicio_proposta=safe_parse_date(res.get('data_inicio_proposta')),
                 data_encerramento_proposta=safe_parse_date(res.get('data_encerramento_proposta')),
-                objeto=res['objeto'],
-                link=res['link']
+                objeto=res.get('objeto'),
+                link=res.get('link')
             )
             session.add(lic)
             session.flush() # Get ID
@@ -304,14 +247,16 @@ class SearchEngine:
             termos_hit = res.get('termos_encontrados') or []
             feature = LicitacaoFeature(
                 licitacao_id=lic.id,
-                fonte=res.get('fonte') or "PNCP",
+                fonte=res.get('origem') or res.get('fonte') or "PNCP",
                 motivo_aprovacao=res.get('motivo_aprovacao'),
                 termos_encontrados=json.dumps(termos_hit) if termos_hit else None,
                 objeto_resumido=(res.get('objeto') or "")[:400]
             )
             session.add(feature)
 
-            itens_api = res.get('_itens_preloaded', []) or self.client.buscar_itens(res)
+            itens_api = res.get("itens") or res.get("_itens_preloaded", [])
+            if not itens_api and res.get("cnpj") and res.get("ano") and res.get("seq"):
+                itens_api = self.client.buscar_itens(res)
             
             # --- DEEP SCAN DESABILITADO (causa lentidão extrema) ---
             # O Deep Scan baixa PDFs e usa IA para extrair itens, mas:
@@ -355,14 +300,24 @@ class SearchEngine:
 
             if matched_products:
                 alert_data = {
+                    "pncp_id": res.get("pncp_id"), # Added for cache tracking
                     "orgao": res.get('orgao'),
                     "uf": res.get('uf'),
+                    "modalidade": res.get('modalidade'),
+                    "match_score": res.get('match_score'),
                     "matched_products": matched_products,
                     "dias_restantes": res.get('dias_restantes'),
+                    "data_encerramento_proposta": res.get('data_encerramento_proposta'),
                     "link": res.get('link')
                 }
-                # Envia alerta IMEDIATAMENTE (Fluxo Contínuo)
-                self.enviar_relatorio_whatsapp([alert_data], session)
+                high_priority_alerts.append(alert_data)
+                
+                if send_immediate_alerts:
+                    # Verifica cache para não re-enviar (Fluxo Contínuo)
+                    if not notification_cache.was_already_sent(res.get("pncp_id")):
+                        # Envia alerta IMEDIATAMENTE
+                        if self.enviar_relatorio_whatsapp([alert_data], session):
+                            notification_cache.mark_as_sent(res.get("pncp_id"))
             
             # Salva no banco IMEDIATAMENTE para aparecer no Dashboard
             session.commit()
@@ -371,4 +326,6 @@ class SearchEngine:
         session.close()
         
         self.log(f"Processamento concluído. {novos} importados.", callback)
+        if return_details:
+            return {"novos": novos, "alerts": high_priority_alerts}
         return novos

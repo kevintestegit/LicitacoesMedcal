@@ -8,21 +8,10 @@ from datetime import datetime
 from typing import Optional, Dict, List
 from dataclasses import dataclass, asdict
 
-try:
-    import google.generativeai as genai
-    GENAI_AVAILABLE = True
-except ImportError:
-    GENAI_AVAILABLE = False
-
 from modules.database.database import get_session, Licitacao, ItemLicitacao, Produto, Configuracao
 from modules.scrapers.pncp_client import PNCPClient
 from modules.scrapers.pdf_extractor import PDFExtractor
-
-try:
-    from modules.ai.ai_config import configure_genai, get_model
-except ImportError:
-    configure_genai = None
-    get_model = None
+from modules.ai.ai_config import get_model
 
 
 @dataclass
@@ -72,13 +61,10 @@ class DeepAnalyzer:
         self.client = PNCPClient()
         self.pdf_extractor = PDFExtractor()
         self.model = None
-        
-        if configure_genai and get_model:
-            try:
-                configure_genai()
-                self.model = get_model(temperature=0.1)
-            except:
-                pass
+        try:
+            self.model = get_model(temperature=0.1)
+        except Exception:
+            self.model = None
     
     def analyze(self, licitacao_id: int, force_refresh: bool = False) -> Optional[DeepAnalysisResult]:
         """

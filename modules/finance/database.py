@@ -1,4 +1,4 @@
-from sqlalchemy import create_engine
+from sqlalchemy import create_engine, event
 from sqlalchemy.orm import declarative_base, sessionmaker
 import os
 
@@ -9,12 +9,43 @@ BASE_DIR = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__fil
 DB_PATH = os.path.join(BASE_DIR, 'data', 'financeiro.db')
 DB_PATH_HIST = os.path.join(BASE_DIR, 'data', 'financeiro_historico.db')
 
-engine = create_engine(f'sqlite:///{DB_PATH}', echo=False)
+engine = create_engine(
+    f'sqlite:///{DB_PATH}',
+    echo=False,
+    connect_args={"check_same_thread": False, "timeout": 30},
+    pool_pre_ping=True,
+)
 Session = sessionmaker(bind=engine)
 
 # Banco histórico: usa o mesmo modelo, mas em arquivo próprio
-engine_hist = create_engine(f'sqlite:///{DB_PATH_HIST}', echo=False)
+engine_hist = create_engine(
+    f'sqlite:///{DB_PATH_HIST}',
+    echo=False,
+    connect_args={"check_same_thread": False, "timeout": 30},
+    pool_pre_ping=True,
+)
 SessionHist = sessionmaker(bind=engine_hist)
+
+
+def _set_pragmas(dbapi_connection):
+    try:
+        cur = dbapi_connection.cursor()
+        cur.execute("PRAGMA journal_mode=WAL;")
+        cur.execute("PRAGMA synchronous=NORMAL;")
+        cur.execute("PRAGMA busy_timeout=5000;")
+        cur.close()
+    except Exception:
+        pass
+
+
+@event.listens_for(engine, "connect")
+def _on_connect(dbapi_connection, connection_record):
+    _set_pragmas(dbapi_connection)
+
+
+@event.listens_for(engine_hist, "connect")
+def _on_connect_hist(dbapi_connection, connection_record):
+    _set_pragmas(dbapi_connection)
 
 def init_finance_db():
     """Inicializa o banco de dados financeiro (cria tabelas)"""

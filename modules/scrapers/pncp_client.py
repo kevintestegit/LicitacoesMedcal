@@ -8,7 +8,10 @@ import unicodedata
 
 class PNCPClient:
     BASE_URL = "https://pncp.gov.br/api/consulta/v1/contratacoes/publicacao"
-    MAX_PAGINAS = 50  # 50 páginas × 50 itens = 2500 licitações por combo (aumentado para melhor cobertura)
+    # Observação: a API frequentemente retorna muitas páginas por UF/modalidade.
+    # Quando usamos filtro local por `dataEncerramentoProposta` (prazo aberto), os resultados "abertos"
+    # podem estar espalhados; limitar paginação cedo tende a reduzir demais a cobertura.
+    MAX_PAGINAS = 200  # limite duro de segurança por combinação (UF × modalidade)
     
     # Termos NEGATIVOS padrão (podem ser sobrescritos ou extendidos)
     TERMOS_NEGATIVOS_PADRAO = [
@@ -27,6 +30,7 @@ class PNCPClient:
         "PASSAGENS AÉREAS NACIONAIS", "PASSAGEM AEREA INTERNACIONAL", "PASSAGEM AÉREA INTERNACIONAL",
         "PASSAGENS AEREAS INTERNACIONAIS", "PASSAGENS AÉREAS INTERNACIONAIS", "RESERVA DE PASSAGEM",
         "RESERVA DE PASSAGENS", "EMISSAO DE PASSAGEM", "EMISSÃO DE PASSAGEM", "EMISSAO DE PASSAGENS",
+        "BILHETE AEREO", "BILHETE AÉREO", "BILHETES AEREOS", "BILHETES AÉREOS",
         "EMISSÃO DE PASSAGENS", "REMARCACAO DE PASSAGEM", "REMARCAÇÃO DE PASSAGEM", "REMARCACAO DE PASSAGENS",
         "REMARCAÇÃO DE PASSAGENS", "Prestação de Serviço de Limpeza", "CONDICIONADORES DE AR", "AQUISIÇÃO DE PNEUS",
         "câmaras de ar", "baterias", "Contratação de instituição financeira", "banco", "CONTROLE EM ZOONOSES",
@@ -42,6 +46,13 @@ class PNCPClient:
         "MATERIAIS DE SEGURANÇA", "EPIS", "VEÍCULOS LEVES E PESADOS", "HORAS DE TRATOR", "VEÍCULOS LEVES", "VEÍCULOS PESADOS",
         "MATERIAIS DIDÁTICOS", "MATERIAL DIDÁTICO", "COMBUSTÍVEL", "PEÇAS DE VEÍCULOS", "SERVIÇOS MECÂNICOS",
         "OUTSOURCING", "TERCEIRIZADO", "TERCEIRIZAÇÃO", "TERCEIRIZAÇÃO DE SERVIÇOS", "MATERIAL ESPORTIVO",
+        "GRAMADO", "GRAMADOS", "MANUTENCAO DE GRAMADOS",
+        "BOMBA SUBMERSA", "BOMBAS SUBMERSAS",
+        "AUDIOMETRO", "AUDIÔMETRO", "FONOAUDIOLOGIA",
+        "FISIOTERAPIA", "INALOTERAPIA",
+        "GESSO", "GIPSITA",
+        "ELEVADOR", "MANUTENCAO DE ELEVADOR", "MANUTENCAO CORRETIVA DE ELEVADOR", "OTIS",
+        "INSUMOS AGROPECUARIOS", "INSUMOS AGROPECUÁRIOS", "SEMENTES DE MILHO", "SEMENTES DE FEIJAO", "SEMENTES DE FEIJÃO",
         "REQUALIFICAÇÃO DOS SISTEMAS DE PROTEÇÃO E COMBATE A INCÊNDIO E PANICO", "LOCACAO DE ESTRUTURAS", "LOCACAO DE ESTRUTURA",
         "LOCAÇÃO DE ESTRUTURA", "MATERIAIS DE CONSTRUÇÕES", "MATERIAIS DE CONSTRUCAO", "MATERIAL DE CONSTRUCAO",
         "PEÇAS AUTOMOTIVAS", "PECAS AUTOMOTIVAS", "LOCAÇÃO DE VEÍCULOS", "LOCAÇÃO DE VEÍCULO", "LOCACAO DE VEICULO",
@@ -99,8 +110,9 @@ class PNCPClient:
         "SERVIÇO PROFISSIONAL POR PESSOA JURIDICA ESPECIALIZADA", "caminhão pipa", "CAMINHÃO PIPA", "CAMINHAO PIPA",
         "CONSTRUÇÃO", "CONSTRUCAO", "OBRA", "OBRAS", "REFORMA", "REFORMAS", "PAVIMENTAÇÃO", "PAVIMENTACAO", 
         "DRENAGEM", "EDIFICAÇÃO", "EDIFICACAO", "CRECHE", "ESCOLA", "QUADRA POLIESPORTIVA", "ENGENHARIA", 
-        "CIVIL", "PREDIAL", "PREDIAIS", "ELÉTRICO", "ELETRICO", "ELÉTRICA", "ELETRICA", "HIDRÁULICO", 
-        "HIDRAULICO", "HIDRÁULICA", "HIDRAULICA", "SANITÁRIO", "SANITARIO", "SANITÁRIA", "SANITARIA", 
+        "CIVIL", "PREDIAL", "PREDIAIS", "INSTALAÇÃO ELÉTRICA", "INSTALACAO ELETRICA", "REDE ELÉTRICA", "REDE ELETRICA", 
+        "INSTALAÇÃO HIDRÁULICA", "INSTALACAO HIDRAULICA", "REDE HIDRÁULICA", "REDE HIDRAULICA", 
+        "ESGOTO SANITÁRIO", "ESGOTO SANITARIO", "REDE SANITÁRIA", "REDE SANITARIA", 
         "URBANA", "URBANIZAÇÃO", "URBANIZACAO", "RODOVIA", "ESTRADA", "TERRAPLENAGEM", "Parque Aquático", "PARQUE AQUÁTICO", "PARQUE AQUATICO",
         "implantação de Sistema de Votação Eletrônica", "IMPLANTAÇÃO DE SISTEMA DE VOTAÇÃO ELETRÔNICA", "IMPLANTACAO DE SISTEMA DE VOTACAO ELETRONICA",
         "Lixo Hospitalar", "LIXO HOSPITALAR", "SERVIÇO DE REMOÇÃO DE LIXO HOSPITALAR", "SERVICO DE REMOCAO DE LIXO HOSPITALAR",
@@ -235,7 +247,16 @@ class PNCPClient:
         "BIOMEDICO", "BIOMÉDICO", "BIOMEDICINA", "BIOQUIMICO", "BIOQUÍMICO", "IONOGRAMA", "EQUIPAMENTO AUTOMATIZADO",
         "EQUIPAMENTOS AUTOMATIZADOS",
         "ANÁLISE CLÍNICA", "ANÁLISES CLÍNICAS", "LABORATÓRIO DE ANÁLISES CLÍNICAS",
-        "TUBO", "TUBOS", "COLETA DE SANGUE", "COVID", "GASOMETRIA", "TESTE RÁPIDO", "TESTE RAPIDO"
+        "TUBO", "TUBOS", "TUBO DE COLETA", "TUBOS DE COLETA", "COLETA DE SANGUE",
+        # Consumíveis hospitalares gerais (diretrizes Medcal)
+        "LUVA", "LUVAS", "MASCARA", "MÁSCARA", "MASCARAS", "MÁSCARAS",
+        "SERINGA", "SERINGAS", "AGULHA", "AGULHAS",
+        "CATETER", "CATETERES", "SONDA", "SONDAS", "EQUIPO", "EQUIPOS",
+        # Termos genéricos comuns no objeto (muitas licitações não citam \"hospitalar\" explicitamente)
+        "MATERIAL MEDICO", "MATERIAL MÉDICO", "MATERIAIS MEDICOS", "MATERIAIS MÉDICOS",
+        "MATERIAL DESCARTAVEL", "MATERIAL DESCARTÁVEL", "MATERIAIS DESCARTAVEIS", "MATERIAIS DESCARTÁVEIS",
+        "DESCARTAVEL", "DESCARTÁVEL", "DESCARTAVEIS", "DESCARTÁVEIS",
+        "COVID", "GASOMETRIA", "TESTE RÁPIDO", "TESTE RAPIDO"
     ]
 
     # Subconjunto prioritário para reduzir falsos positivos (usado como filtro inicial)
@@ -259,7 +280,14 @@ class PNCPClient:
         "INSUMOS DE LABORATORIO", "INSUMOS DE LABORATÓRIO",
         "MATERIAIS DE LABORATORIO", "MATERIAIS DE LABORATÓRIO",
         "CORRELATOS", "VIDRARIA", "VIDRARIAS",
-        
+
+        # Consumíveis hospitalares gerais (diretrizes Medcal)
+        "MATERIAL MEDICO", "MATERIAL MÉDICO", "MATERIAIS MEDICOS", "MATERIAIS MÉDICOS",
+        "MATERIAL DESCARTAVEL", "MATERIAL DESCARTÁVEL", "MATERIAIS DESCARTAVEIS", "MATERIAIS DESCARTÁVEIS",
+        "DESCARTAVEL", "DESCARTÁVEL", "DESCARTAVEIS", "DESCARTÁVEIS",
+        "LUVA", "LUVAS", "MASCARA", "MÁSCARA", "SERINGA", "SERINGAS", "AGULHA", "AGULHAS",
+        "CATETER", "CATETERES", "SONDA", "SONDAS", "EQUIPO", "EQUIPOS", "TUBO DE COLETA", "TUBOS DE COLETA",
+
         # EQUIPAMENTOS MÉDICO-HOSPITALARES (várias formas de escrita)
         "EQUIPAMENTO MEDICO HOSPITALAR", "EQUIPAMENTOS MEDICO HOSPITALARES",
         "EQUIPAMENTO MEDICO-HOSPITALAR", "EQUIPAMENTOS MEDICO-HOSPITALARES",
@@ -310,6 +338,17 @@ class PNCPClient:
     TERMOS_EVENTOS_NEGATIVOS = [
         "INSCRICAO", "INSCRIÇÃO", "CONFERENCIA", "CONFERÊNCIA", "CONGRESSO",
         "SEMINARIO", "SEMINÁRIO", "WORKSHOP", "PALESTRA", "EVENTOS"
+    ]
+
+    # Negativos específicos de infraestrutura (evita falsos positivos como "bombas submersas")
+    # Mantém fora de TERMOS_NEGATIVOS_PADRAO (que já é enorme) para ficar fácil ajustar.
+    TERMOS_INFRA_NEGATIVOS = [
+        "BOMBA SUBMERSA", "BOMBAS SUBMERSAS",
+        "BOMBA D'AGUA", "BOMBA D ÁGUA", "BOMBA D AGUA", "BOMBA DE AGUA", "BOMBA DE ÁGUA",
+        "BOMBAS DE AGUA", "BOMBAS DE ÁGUA",
+        "BOMBA CENTRIFUGA", "BOMBA CENTRÍFUGA", "BOMBAS CENTRIFUGAS", "BOMBAS CENTRÍFUGAS",
+        "ELEVATORIA", "ELEVATÓRIA",
+        "POCO ARTESIANO", "POÇO ARTESIANO",
     ]
 
     # Anti-ruido adicional (fora do escopo Medcal)
@@ -413,7 +452,7 @@ class PNCPClient:
         "VEICULO AUTOMOTIVO", "VEÍCULO AUTOMOTIVO", "VEICULOS AUTOMOTIVOS", "VEÍCULOS AUTOMOTIVOS",
         "SEDAN", "HATCH", "SUV", "PICKUP", "PICK-UP",
         "ZERO QUILOMETRO", "ZERO QUILÔMETRO", "0KM",
-        "HIBRIDO", "HÍBRIDO", "PLUG-IN", "ELETRICO", "ELÉTRICO",
+        "HIBRIDO", "HÍBRIDO", "PLUG-IN", "VEICULO ELETRICO", "VEÍCULO ELÉTRICO",
         "CONCESSIONARIA", "CONCESSIONÁRIA", "CONCESSIONARIAS", "CONCESSIONÁRIAS",
         "ANO DE FABRICACAO", "ANO DE FABRICAÇÃO",
 
@@ -430,7 +469,78 @@ class PNCPClient:
         "TELEFONIA", "TELEFONE", "CENTRAL TELEFONICA", "PABX", "RAMAIS", "VOIP", "INTERNET", "LINK DEDICADO", "FIBRA OTICA", "FIBRA OPTICA", "WIFI", "WI-FI",
 
         # Refrigeração (bloqueia manutenção de câmaras frias / refrigeração genérica)
-        "REFRIGERACAO", "REFRIGERAÇÃO", "CAMARA FRIA", "CAMARA DE REFRIGERACAO", "CAMARA DE REFRIGERAÇÃO", "REFRIGERAÇÃO INDUSTRIAL", "REFRIGERACAO INDUSTRIAL"
+        "REFRIGERACAO", "REFRIGERAÇÃO", "CAMARA FRIA", "CAMARA DE REFRIGERACAO", "CAMARA DE REFRIGERAÇÃO", "REFRIGERAÇÃO INDUSTRIAL", "REFRIGERACAO INDUSTRIAL",
+
+        # Veículos/Viaturas e manutenção automotiva
+        "VIATURA", "VIATURAS", "MANUTENCAO DE VIATURA", "MANUTENÇÃO DE VIATURA", "MANUTENCAO DE VEICULO", "MANUTENÇÃO DE VEÍCULO",
+        "MITSUBISHI", "TOYOTA", "CHEVROLET", "FORD", "VOLKSWAGEN", "FIAT", "RENAULT", "HYUNDAI", "HONDA",
+        "L200", "HILUX", "S10", "RANGER", "AMAROK", "TRITON", "FRONTIER",
+
+        # Equipamentos de construção/obras
+        "GUINCHO", "GUINCHOS", "POLITRIZ", "BALDE", "BETONEIRA", "COMPACTADOR", "ROLO COMPACTADOR",
+        "RETROESCAVADEIRA", "PA CARREGADEIRA", "MOTONIVELADORA",
+
+        # Agrícola/Rural
+        "RANCHO", "MAQUINARIOS DE RANCHO", "PLANTIO", "GRAMÍNEO", "GRAMINEO", "PLANTIO GRAMINEO",
+        "PASTAGEM", "FORRAGEM", "ADUBACAO", "ADUBAÇÃO", "IRRIGACAO", "IRRIGAÇÃO",
+
+        # Hidrossanitário/Encanamento (construção civil)
+        "HIDROSSANITARIO", "HIDROSSANITÁRIO", "HIDROSSANITARIOS", "HIDROSSANITÁRIOS",
+        "MATERIAIS HIDROSSANITARIOS", "MATERIAIS HIDROSSANITÁRIOS",
+        "ENCANAMENTO", "TUBULACAO", "TUBULAÇÃO",
+
+        # Eventos/Festas/Carnaval
+        "CARNAVAL", "CARNAVALESCO", "CARNAVALESCA", "CICLO CARNAVALESCO",
+        "SAO JOAO", "SÃO JOÃO", "JUNINO", "JUNINA", "REVEILLON", "RÉVEILLON",
+        "TRIO ELETRICO", "TRIO ELÉTRICO",
+
+        # Militares/Exército (não é área da Medcal)
+        "COMANDO DO EXERCITO", "COMANDO DO EXÉRCITO", "EXERCITO BRASILEIRO", "EXÉRCITO BRASILEIRO",
+        "QUARTEL", "BATALHAO", "BATALH", "REGIMENTO", "BRIGADA",
+
+        # Documentos/Identificação
+        "PELICULA DE SEGURANCA", "PELÍCULA DE SEGURANÇA", "CARTEIRA DE IDENTIFICACAO", "CARTEIRA DE IDENTIFICAÇÃO",
+        "CIN", "CARTEIRA NACIONAL", "DOCUMENTO DE IDENTIDADE",
+
+        # Equipamentos de escritório/TI (copiadoras/impressoras)
+        "MAQUINA COPIADORA", "MÁQUINA COPIADORA", "MAQUINAS COPIADORAS", "MÁQUINAS COPIADORAS",
+        "COPIADORA", "COPIADORAS", "MULTIFUNCIONAL", "MULTIFUNCIONAIS",
+
+        # Clipes cirúrgicos / Clipadores (fora do escopo Medcal - equipamento cirúrgico, não laboratorial)
+        "CLIP DE TITANIO", "CLIPE DE TITÂNIO", "CLIPS DE TITANIO", "CLIPES DE TITÂNIO",
+        "CLIPADOR", "CLIPADORES",
+
+        # Diabéticos (insumos para pacientes - fora do escopo lab/hospitalar Medcal)
+        "PACIENTES DIABETICOS", "PACIENTES DIABÉTICOS", "DIABETICO", "DIABÉTICO", "DIABETICA", "DIABÉTICA",
+        "INSULINA", "GLICOSIMETRO", "GLICOSÍMETRO", "FITA DE GLICEMIA", "FITAS DE GLICEMIA",
+
+        # Geradores / Subestações / Elétrica predial
+        "GRUPO GERADOR", "GRUPOS GERADORES", "SUBESTACAO", "SUBESTAÇÃO", "SUBESTACOES", "SUBESTAÇÕES",
+        "SPDA", "PARA-RAIO", "PARA-RAIOS",
+
+        # Bombeiros
+        "BOMBEIRO", "BOMBEIROS", "CORPO DE BOMBEIROS", "BOMBEIRO MILITAR", "BOMBEIROS MILITARES",
+
+        # Funerária
+        "URNA FUNERARIA", "URNA FUNERÁRIA", "URNAS FUNERARIAS", "URNAS FUNERÁRIAS",
+        "FUNERARIA", "FUNERÁRIA", "FUNERARIO", "FUNERÁRIO",
+        "TRASLADO DE CORPO", "TRASLADO DE CORPOS", "REMOCAO DE CORPO", "REMOÇÃO DE CORPO",
+
+        # Pulseiras de identificação (fora do escopo)
+        "PULSEIRA DE IDENTIFICACAO", "PULSEIRA DE IDENTIFICAÇÃO", "PULSEIRAS DE IDENTIFICACAO", "PULSEIRAS DE IDENTIFICAÇÃO",
+
+        # Motomecanizados/Viaturas
+        "MOTOMECANIZADO", "MOTOMECANIZADOS", "INSUMOS PARA VIATURAS",
+
+        # Estruturas físicas/Montagem
+        "ESTRUTURA FISICA", "ESTRUTURA FÍSICA", "MONTAGEM DE ESTRUTURA", "LOCACAO E MONTAGEM",
+        "LOCAÇÃO E MONTAGEM",
+
+        # Serviços de pessoal/Mão de obra terceirizada
+        "GARÇOM", "GARCOM", "COPEIRO", "COPEIRA", "PORTEIRO", "PORTEIRA",
+        "OFFICE BOY", "OFFICE-BOY", "SERVICOS GERAIS", "SERVIÇOS GERAIS",
+        "MAO DE OBRA", "MÃO DE OBRA", "TERCEIRIZACAO DE MAO DE OBRA", "TERCEIRIZAÇÃO DE MÃO DE OBRA",
+        "MEI", "MICROEMPREENDEDOR", "DIARIA", "DIÁRIA", "REGIME DE DIARIA", "REGIME DE DIÁRIA"
     ]
     TERMOS_NEGATIVOS_PADRAO = TERMOS_NEGATIVOS_PADRAO + TERMOS_NEGATIVOS_EXTRA
     
@@ -469,6 +579,26 @@ class PNCPClient:
         self._prioritarios_norm = [self._normalize_for_match(t) for t in self.TERMOS_PRIORITARIOS]
         self._negativos_norm = [self._normalize_for_match(t) for t in self.TERMOS_NEGATIVOS_PADRAO]
         self._eventos_neg_norm = [self._normalize_for_match(t) for t in self.TERMOS_EVENTOS_NEGATIVOS]
+        self._infra_neg_norm = [self._normalize_for_match(t) for t in self.TERMOS_INFRA_NEGATIVOS]
+        self._positivos_norm = [self._normalize_for_match(t) for t in self.TERMOS_POSITIVOS_PADRAO]
+        # Default combinado (evita recomputar listas enormes a cada chamada)
+        self._negativos_com_eventos_norm = self._negativos_norm + self._eventos_neg_norm + self._infra_neg_norm
+
+    def _is_maintenance_term(self, termo_norm: str) -> bool:
+        if not termo_norm:
+            return False
+        # "manutenção preventiva/corretiva", "calibração", "aferição", "reparo" são genéricos e
+        # só devem aprovar se houver contexto laboratorial/hospitalar.
+        return any(
+            k in termo_norm
+            for k in (
+                "MANUTENCAO",
+                "CALIBRACAO",
+                "AFERICAO",
+                "REPARO",
+                "ASSISTENCIA TECNICA",
+            )
+        )
 
     def _normalize_for_match(self, texto: str) -> str:
         """
@@ -510,10 +640,18 @@ class PNCPClient:
         """
         obj_norm = self._normalize_for_match(obj_upper)
 
-        termos_prio = [t for t in termos_prio_norm if t and t in obj_norm]
-        termos_pos = [t for t in termos_pos_norm if t and t in obj_norm] if termos_pos_norm else []
+        termos_prio = [t for t in (termos_prioritarios_norm or []) if t and t in obj_norm]
+        termos_pos = [t for t in (termos_positivos_norm or []) if t and t in obj_norm]
 
         if termos_prio:
+            # Regra anti-falso-positivo:
+            # Se o(s) termos prioritários encontrados forem apenas de "manutenção/calibração/reparo",
+            # exige contexto laboratorial/hospitalar para não aprovar "bombas submersas", frota, predial, etc.
+            tem_contexto_lab = any(ctx and ctx in obj_norm for ctx in self._contexto_norm)
+            prio_nao_manutencao = [t for t in termos_prio if not self._is_maintenance_term(t)]
+            if not prio_nao_manutencao and not tem_contexto_lab:
+                return False, "Manutenção sem contexto laboratorial/hospitalar", termos_prio
+
             return True, f"Termos prioritários: {', '.join(termos_prio[:3])}", termos_prio
 
         if not termos_pos:
@@ -528,42 +666,51 @@ class PNCPClient:
 
         return False, "Sem contexto laboratorial/hospitalar", termos_pos
 
-    def buscar_oportunidades(self, dias_busca=30, estados=['RN', 'PB', 'PE', 'AL'], termos_positivos=None, termos_negativos=None, apenas_abertas=True):
+    def buscar_oportunidades(
+        self,
+        dias_busca=30,
+        estados=['RN', 'PB', 'PE', 'AL'],
+        termos_positivos=None,
+        termos_negativos=None,
+        apenas_abertas=True,
+        max_por_combo: int | None = 100,
+        max_paginas_por_combo: int | None = None,
+        page_workers: int = 2,
+    ):
         """
         Busca licitações (Pregão/Dispensa) publicadas nos últimos X dias.
         Aplica filtros de termos positivos (OR) e negativos (NOT).
         Se apenas_abertas=True, exige dataEncerramentoProposta >= hoje.
         """
         if termos_negativos is None:
-            termos_negativos = self.TERMOS_NEGATIVOS_PADRAO + self.TERMOS_EVENTOS_NEGATIVOS
+            termos_neg_norm = self._negativos_com_eventos_norm
+        else:
+            termos_negativos_upper = list(dict.fromkeys(str(t).upper() for t in termos_negativos))
+            termos_neg_norm = [self._normalize_for_match(t) for t in termos_negativos_upper]
 
         if termos_positivos is None or len(termos_positivos) == 0:
-            termos_positivos = self.TERMOS_POSITIVOS_PADRAO
+            termos_pos_norm = self._positivos_norm
+        else:
+            termos_positivos_upper = list(dict.fromkeys(str(t).upper() for t in termos_positivos))
+            termos_pos_norm = [self._normalize_for_match(t) for t in termos_positivos_upper]
 
-        # Mantém interface atual (upper), mas o matching interno usa normalização robusta
-        termos_negativos_upper = list(dict.fromkeys(str(t).upper() for t in termos_negativos))
-        termos_positivos_upper = list(dict.fromkeys(str(t).upper() for t in termos_positivos))
-        termos_prioritarios_upper = [str(t).upper() for t in self.TERMOS_PRIORITARIOS]
-
-        # Pré-normaliza negativos uma vez por chamada (permite sobrescrita via parâmetros)
-        termos_neg_norm = [self._normalize_for_match(t) for t in termos_negativos_upper]
-        termos_pos_norm = [self._normalize_for_match(t) for t in termos_positivos_upper]
-        termos_prio_norm = [self._normalize_for_match(t) for t in termos_prioritarios_upper]
+        termos_prio_norm = self._prioritarios_norm
 
         hoje = datetime.now()
         
-        # LÓGICA OTIMIZADA:
-        # Se queremos apenas abertas, não importa quando foi publicado (pode ser há 30 dias).
-        # Importa que o encerramento seja futuro.
-        # Por isso, estendemos a dataInicial de publicação para garantir que não perdemos nada,
-        # mas filtramos rigidamente pela dataFinalEncerramentoProposta.
-        
+        # IMPORTANTE (performance x cobertura):
+        # A API do PNCP pode retornar um volume muito grande de publicações, e os registros com
+        # `dataEncerramentoProposta` aberta podem ficar espalhados. Para evitar varrer dezenas de
+        # milhares de resultados, usamos a janela de publicação solicitada (`dias_busca`) e filtramos
+        # localmente por prazo aberto (dataEncerramentoProposta >= hoje).
+        #
+        # Se você precisar aumentar a cobertura, aumente `dias_busca` no chamador.
         if apenas_abertas:
-            data_inicial_dt = hoje - timedelta(days=120) # Janela segura de publicação (4 meses)
-            data_inicial_enc_dt = hoje # Encerramento a partir de HOJE
-            data_final_enc_dt = hoje + timedelta(days=120) # Até 4 meses pra frente
+            data_inicial_dt = hoje - timedelta(days=max(int(dias_busca or 30), 1))
+            data_inicial_enc_dt = hoje  # tentamos filtrar por encerramento na API (nem sempre é aplicado)
+            data_final_enc_dt = hoje + timedelta(days=120)
         else:
-            data_inicial_dt = hoje - timedelta(days=dias_busca)
+            data_inicial_dt = hoje - timedelta(days=max(int(dias_busca or 30), 1))
             data_inicial_enc_dt = None
             data_final_enc_dt = None
 
@@ -604,81 +751,169 @@ class PNCPClient:
             modalidade_nome = {6: "Pregão", 8: "Dispensa", 12: "Emergencial"}.get(modalidade)
             resultados_local = []
             count_api = 0
+            total_paginas_api = None
             
             tamanho_pagina = 50
-            for pagina in range(1, self.MAX_PAGINAS + 1):
-                params = params_base.copy()
-                params.update({
-                    "codigoModalidadeContratacao": modalidade,
-                    "uf": uf,
-                    "pagina": str(pagina),
-                    "tamanhoPagina": str(tamanho_pagina)
-                })
-                
-                try:
-                    resp = self.session.get(self.BASE_URL, params=params, headers=self.headers, timeout=30)
-                    
-                    # Fallback formato ISO (usando parâmetro local, não closure)
-                    if resp.status_code == 400:
-                        params["dataInicial"] = datas_fallback['data_inicial_iso']
-                        params["dataFinal"] = datas_fallback['data_final_iso']
-                        resp = self.session.get(self.BASE_URL, params=params, headers=self.headers, timeout=30)
-                    
-                    if resp.status_code != 200:
-                        continue
-                    
-                    data = resp.json().get('data', [])
-                    count_api += len(data)
-                    
-                    if not data:
-                        break
-                    
-                    for item in data:
-                        obj_raw = item.get('objetoCompra') or item.get('objeto') or ""
-                        obj = obj_raw.upper()
-                        obj_norm = self._normalize_for_match(obj)
-                        
-                        if not obj:
-                            continue
 
-                        # Filtro Positivo + Contexto (evita falsos positivos de manutenção genérica)
-                        aprovado, motivo_aprov, termos_hit = self.avaliar_objeto(obj, termos_pos_norm, termos_prio_norm)
-                        if not aprovado:
-                            continue
-                        
-                        # Filtro Negativo OTIMIZADO: verifica cada termo
-                        bloqueado = False
-                        for t in termos_neg_norm:
-                            if t and t in obj_norm:
-                                bloqueado = True
+            def fetch_page(page_num: int):
+                params = params_base.copy()
+                params.update(
+                    {
+                        "codigoModalidadeContratacao": modalidade,
+                        "uf": uf,
+                        "pagina": str(page_num),
+                        "tamanhoPagina": str(tamanho_pagina),
+                    }
+                )
+                resp = self.session.get(self.BASE_URL, params=params, headers=self.headers, timeout=45)
+                # A API aceita yyyyMMdd; se 400, tentamos ISO apenas para dataInicial/dataFinal (legado)
+                if resp.status_code == 400:
+                    params["dataInicial"] = datas_fallback["data_inicial_iso"]
+                    params["dataFinal"] = datas_fallback["data_final_iso"]
+                    resp = self.session.get(self.BASE_URL, params=params, headers=self.headers, timeout=45)
+                if resp.status_code == 204:
+                    return [], 0
+                if resp.status_code != 200:
+                    return None, 0
+                payload = resp.json()
+                try:
+                    total_pags = int(payload.get("totalPaginas") or 0)
+                except Exception:
+                    total_pags = 0
+                return payload.get("data", []) or [], total_pags
+
+            def process_items(items) -> int:
+                nonlocal count_api
+                aprovados_pagina = 0
+                count_api += len(items)
+                for item in items:
+                    obj_raw = item.get("objetoCompra") or item.get("objeto") or ""
+                    obj = obj_raw.upper()
+                    if not obj:
+                        continue
+                    obj_norm = self._normalize_for_match(obj)
+
+                    aprovado, motivo_aprov, termos_hit = self.avaliar_objeto(obj, termos_pos_norm, termos_prio_norm)
+                    if not aprovado:
+                        continue
+
+                    bloqueado = False
+                    for t in termos_neg_norm:
+                        if t and t in obj_norm:
+                            bloqueado = True
+                            break
+                    if bloqueado:
+                        continue
+
+                    data_encerramento = item.get("dataEncerramentoProposta")
+                    if not data_encerramento:
+                        continue
+
+                    dias_restantes = self.calcular_dias(data_encerramento)
+                    if dias_restantes < 0:
+                        continue
+
+                    parsed = self._parse_licitacao(item)
+                    parsed["dias_restantes"] = dias_restantes
+                    parsed["motivo_aprovacao"] = motivo_aprov
+                    parsed["termos_encontrados"] = termos_hit[:5]
+                    parsed["fonte"] = "PNCP"
+                    resultados_local.append(parsed)
+                    aprovados_pagina += 1
+
+                    if apenas_abertas and max_por_combo and len(resultados_local) >= max_por_combo:
+                        return aprovados_pagina
+                return aprovados_pagina
+
+            # Estratégia de paginação (acelera quando quase tudo está com prazo vencido):
+            # 1) Lê página 1 para obter totalPaginas.
+            # 2) Se não aprovar nada na página 1, tenta a última página e decide direção.
+            first_items, total_pags = fetch_page(1)
+            if first_items is None:
+                print(f"  ✗ {modalidade_nome}/{uf}: erro na página 1")
+                return 0
+            if total_paginas_api is None:
+                total_paginas_api = total_pags
+            max_paginas_combo = min(self.MAX_PAGINAS, total_paginas_api or self.MAX_PAGINAS)
+            if max_paginas_por_combo is not None:
+                try:
+                    max_paginas_combo = min(max_paginas_combo, int(max_paginas_por_combo))
+                except Exception:
+                    pass
+
+            aprov_first = process_items(first_items)
+            if apenas_abertas and max_por_combo and len(resultados_local) >= max_por_combo:
+                with resultados_lock:
+                    resultados.extend(resultados_local)
+                    total_api[0] += count_api
+                print(f"  ✓ {modalidade_nome}/{uf}: {len(resultados_local)} aprovados de {count_api}")
+                return len(resultados_local)
+
+            # Estratégia para `apenas_abertas`:
+            # - A API costuma retornar grandes volumes e, na prática, resultados com prazo aberto
+            #   frequentemente não aparecem nas primeiras páginas.
+            # - Para acelerar, varremos o \"miolo\" pelo fim: últimas N páginas (N = max_paginas_combo).
+            if apenas_abertas and total_paginas_api and total_paginas_api > 1:
+                last_page = total_paginas_api
+                start = last_page
+                end = max(2, last_page - max_paginas_combo + 1)
+                pages = range(start, end - 1, -1)
+            else:
+                pages = range(2, max_paginas_combo + 1)
+
+            # Paraleliza requisições de páginas dentro do combo para reduzir tempo de parede.
+            # Observação: o executor externo já paraleliza UFs/modalidades; aqui usamos poucos workers
+            # para não sobrecarregar (padrão 2).
+            page_workers_eff = max(1, int(page_workers or 1))
+            pages_list = list(pages)
+            if pages_list and page_workers_eff > 1:
+                with concurrent.futures.ThreadPoolExecutor(max_workers=page_workers_eff) as page_exec:
+                    idx = 0
+                    in_flight = {}
+                    while idx < len(pages_list) or in_flight:
+                        while idx < len(pages_list) and len(in_flight) < page_workers_eff:
+                            pagina = pages_list[idx]
+                            idx += 1
+                            in_flight[page_exec.submit(fetch_page, pagina)] = pagina
+
+                        done, _ = concurrent.futures.wait(
+                            in_flight.keys(),
+                            return_when=concurrent.futures.FIRST_COMPLETED,
+                        )
+                        for fut in done:
+                            pagina = in_flight.pop(fut)
+                            if apenas_abertas and max_por_combo and len(resultados_local) >= max_por_combo:
+                                in_flight.clear()
                                 break
-                        if bloqueado:
-                            continue
-                        
-                        # Filtro Data
-                        data_encerramento = item.get("dataEncerramentoProposta")
-                        if not data_encerramento:
-                            continue
-                        
-                        dias_restantes = self.calcular_dias(data_encerramento)
-                        if dias_restantes < 0:
-                            continue
-                        
-                        parsed = self._parse_licitacao(item)
-                        parsed['dias_restantes'] = dias_restantes
-                        parsed['motivo_aprovacao'] = motivo_aprov
-                        parsed['termos_encontrados'] = termos_hit[:5]
-                        parsed['fonte'] = "PNCP"
-                        resultados_local.append(parsed)
-                    
-                    if len(data) < tamanho_pagina:
+                            try:
+                                items, _ = fut.result()
+                            except requests.exceptions.ReadTimeout:
+                                continue
+                            except Exception as e:
+                                print(f"[PNCP] Erro {modalidade_nome}/{uf} pag {pagina}: {e}")
+                                continue
+                            if items is None:
+                                continue
+                            if not items:
+                                in_flight.clear()
+                                break
+                            process_items(items)
+            else:
+                for pagina in pages_list:
+                    if apenas_abertas and max_por_combo and len(resultados_local) >= max_por_combo:
                         break
-                        
-                except requests.exceptions.ReadTimeout:
-                    continue
-                except Exception as e:
-                    print(f"[PNCP] Erro {modalidade_nome}/{uf} pag {pagina}: {e}")
-                    continue
+                    try:
+                        items, _ = fetch_page(pagina)
+                        if items is None:
+                            continue
+                        if not items:
+                            break
+                        process_items(items)
+                    except requests.exceptions.ReadTimeout:
+                        continue
+                    except Exception as e:
+                        print(f"[PNCP] Erro {modalidade_nome}/{uf} pag {pagina}: {e}")
+                        continue
             
             # Thread-safe: adiciona resultados
             with resultados_lock:
@@ -761,7 +996,7 @@ class PNCPClient:
         
         arquivos = []
         try:
-            resp = requests.get(url, headers=self.headers, timeout=10)
+            resp = requests.get(url, headers=self.headers, timeout=20)
             if resp.status_code == 200:
                 lista = resp.json()
                 for arq in lista:
@@ -812,7 +1047,7 @@ class PNCPClient:
         itens_encontrados = []
         for url in urls_tentativas:
             try:
-                resp = requests.get(url, headers=self.headers, timeout=10)
+                resp = requests.get(url, headers=self.headers, timeout=30)
                 if resp.status_code != 200:
                     print(f"[PNCP] Itens HTTP {resp.status_code} em {url}")
                     continue
@@ -850,7 +1085,7 @@ class PNCPClient:
             return None
         url = f"https://pncp.gov.br/api/pncp/v1/orgaos/{cnpj}/compras/{ano}/{seq}"
         try:
-            resp = requests.get(url, headers=self.headers, timeout=10)
+            resp = requests.get(url, headers=self.headers, timeout=20)
             if resp.status_code != 200:
                 print(f"Erro buscar_por_id: {resp.status_code} {resp.text[:200]}")
                 return None

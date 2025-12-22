@@ -260,7 +260,7 @@ python scripts/restore_db.py backups/arquivo_editado.json
 **Use o `.env` para isso:**
 ```bash
 # .env (não versionado)
-GEMINI_API_KEY=sua_chave_aqui
+OPENROUTER_API_KEY=sua_chave_aqui
 WHATSAPP_APIKEY=sua_chave_aqui
 ```
 

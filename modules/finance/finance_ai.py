@@ -1,4 +1,4 @@
-import google.generativeai as genai
+import requests
 from sqlalchemy import text
 import pandas as pd
 from modules.finance.database import get_finance_session, get_finance_historico_session
@@ -13,17 +13,21 @@ class FinanceAI:
         """
         self.session_factory = session_factory or get_finance_session
         self.fonte_nome = fonte_nome
-        self.api_key = self._get_api_key()
-        if self.api_key:
-            genai.configure(api_key=self.api_key)
-            self.model = genai.GenerativeModel('gemini-2.0-flash')
-        else:
-            self.model = None
 
-    def _get_api_key(self):
-        """Busca a API Key nas configurações do banco principal"""
+        self.provider = None
+
+        # OpenRouter-only
+        self.api_key_openrouter = self._get_config_value('openrouter_api_key')
+        # Modelo default (público/grátis) e sobrescrevível via Configuracao.openrouter_model
+        # Use um dos modelos públicos listados em https://openrouter.ai/models (sem prefixo openrouter/)
+        # Exemplo gratuito: "mistralai/mistral-7b-instruct:free"
+        self.openrouter_model = self._get_config_value('openrouter_model') or "mistralai/mistral-7b-instruct:free"
+        if self.api_key_openrouter:
+            self.provider = 'openrouter'
+
+    def _get_config_value(self, chave):
         session = get_main_session()
-        config = session.query(Configuracao).filter_by(chave='gemini_api_key').first()
+        config = session.query(Configuracao).filter_by(chave=chave).first()
         session.close()
         return config.valor if config else None
 
@@ -33,8 +37,33 @@ class FinanceAI:
         2. Executa SQL.
         3. Gera resposta explicativa.
         """
-        if not self.model:
-            return "⚠️ Erro: API Key do Gemini não configurada. Vá em 'Configurações' e adicione sua chave."
+        # Heurística: consultas conhecidas (Magnus / Paulo) respondem localmente sem LLM
+        pergunta_lower = pergunta.lower()
+        if any(k in pergunta_lower for k in ['magnus', '7704587000169', '07704587000169']):
+            return self._responder_pagador_local(
+                nome="Magnus Soares",
+                patterns=[
+                    "%magnus%",
+                    "%MAGNUS%",
+                    "%7704587000169%",
+                    "%07704587000169%",
+                    "%PAGAMENTO PIX 07704587000169%",
+                ]
+            )
+        if any(k in pergunta_lower for k in ['paulo sergio', 'paulo', '65427238468']):
+            return self._responder_pagador_local(
+                nome="Paulo Sergio Soares",
+                patterns=[
+                    "%paulo%",
+                    "%sergio%",
+                    "%PAULO SERGIO SOARES%",
+                    "%PAGAMENTO PIX 654272%",
+                    "%65427238468%",
+                ]
+            )
+
+        if not self.provider:
+            return "⚠️ Erro: IA não configurada. Adicione `openrouter_api_key` em Configurações."
 
         # 1. Gerar SQL
         try:
@@ -57,7 +86,7 @@ class FinanceAI:
             return f"Desculpe, não consegui processar essa pergunta.\nErro: {str(e)}"
 
     def _gerar_sql(self, pergunta: str) -> str:
-        """Pede para o Gemini criar a query SQL"""
+        """Pede para o LLM criar a query SQL"""
         
         schema = """
         Tabela: extratos_bb
@@ -94,6 +123,8 @@ class FinanceAI:
            - SESAP/Estado: agrupe (tipo IN ('Recebimento SESAP', 'Hematologia', 'Coagulação', 'Coagulacao', 'Ionograma', 'Ordem Bancária'))
            - Impostos: tipo LIKE '%Imposto%' OU tipo = 'Impostos'
            - Base Aérea: tipo = 'Recebimento Base Aérea' OU tipo LIKE '%Base%'
+           - Magnus Soares (pagamentos): historico LIKE '%magnus%' OU documento LIKE '%7704587000169%' OU historico LIKE '%07704587000169%' (saídas: valor < 0, somar ABS)
+           - Paulo Sergio Soares (pagamentos): historico LIKE '%paulo sergio%' OU documento LIKE '%65427238468%' OU historico LIKE '%65427238468%' (saídas: valor < 0, somar ABS)
 
         5. STATUS:
            - Para contar baixados: COUNT(*) WHERE status = 'Baixado'
@@ -118,10 +149,13 @@ class FinanceAI:
         SQL:
         """
         
-        response = self.model.generate_content(prompt)
+        try:
+            sql_query = self._openrouter_complete(prompt)
+        except Exception as e:
+            raise Exception(f"Erro ao gerar SQL ({self.provider or 'sem provedor'}): {e}")
         
         # Limpeza agressiva do SQL
-        sql_query = response.text.replace('```sql', '').replace('```', '').strip()
+        sql_query = sql_query.replace('```sql', '').replace('```', '').strip()
         
         # Garante que começa com SELECT (remove lixo antes)
         if "SELECT" in sql_query.upper():
@@ -159,13 +193,15 @@ class FinanceAI:
         Com base nesse resultado, responda a pergunta do usuário de forma direta, amigável e em Português (Brasil).
         Se for um valor monetário, formate como R$ X,XX.
         """
-        
-        response = self.model.generate_content(prompt)
+        try:
+            resp_text = self._openrouter_complete(prompt).strip()
+        except Exception as e:
+            return f"Erro ao gerar resposta ({self.provider or 'sem provedor'}): {e}"
         detalhes = self._format_result_table(df)
         # Acrescenta uma visão detalhada dos registros retornados para perguntas como "quais são"
         if detalhes:
-            return f"{response.text.strip()}\n\n**Detalhes (máx 50 linhas):**\n{detalhes}"
-        return response.text
+            return f"{resp_text}\n\n**Detalhes (máx 50 linhas):**\n{detalhes}"
+        return resp_text
 
     def _format_result_table(self, df: pd.DataFrame, max_rows: int = 50) -> str:
         """Formata o dataframe em lista amigável e segura para exibir diretamente."""
@@ -199,3 +235,103 @@ class FinanceAI:
         if isinstance(valor, (date, datetime)):
             return valor.strftime("%d/%m/%Y")
         return str(valor)
+
+    # ==== CONSULTA LOCAL PARA PAGADORES ESPECÍFICOS ====
+    def _responder_pagador_local(self, nome: str, patterns) -> str:
+        """
+        Consulta local (sem LLM) para pagadores específicos (Magnus/Paulo).
+        Soma saídas (valor < 0) em ABS e retorna por ano + total geral nas duas bases.
+        Observação: ignora lançamentos cuja classificação/tipo pareça não ser pagamento direto (ex.: Impostos, Compra Cartão).
+        """
+        bases = [
+            ("Financeiro Atual", get_finance_session),
+            ("Financeiro Histórico", get_finance_historico_session)
+        ]
+        linhas = []
+        total_geral = 0.0
+        detalhes = []
+        for label, sess_fn in bases:
+            sess = sess_fn()
+            # monta condição SQL
+            conds = []
+            params = {}
+            for idx, p in enumerate(patterns):
+                conds.append(f"(historico LIKE :p{idx} OR documento LIKE :p{idx} OR historico_complementar LIKE :p{idx})")
+                params[f"p{idx}"] = p
+            where = " OR ".join(conds)
+
+            # Tipos a excluir (não são pagamento direto para a pessoa)
+            tipos_excluir = ['Impostos', 'Compra com Cartão', 'Compra Com Cartão', 'Pagamento Boleto', 'Pagamento de Boleto']
+            tipo_excluir_clause = " AND (tipo IS NULL OR tipo NOT IN (:t0, :t1, :t2, :t3, :t4))"
+            params.update({ 't0': tipos_excluir[0], 't1': tipos_excluir[1], 't2': tipos_excluir[2], 't3': tipos_excluir[3], 't4': tipos_excluir[4] })
+            sql = f"""
+                SELECT ano_referencia, COUNT(*) as qtd,
+                       SUM(CASE WHEN valor < 0 THEN ABS(valor) ELSE 0 END) as pago
+                FROM extratos_bb
+                WHERE ({where}) AND valor < 0 {tipo_excluir_clause}
+                GROUP BY ano_referencia
+                ORDER BY ano_referencia
+            """
+            res = sess.execute(text(sql), params).fetchall()
+
+            # Detalhes (limitados) para exibir ao usuário
+            sql_det = f"""
+                SELECT dt_balancete, valor, historico, historico_complementar, fatura, observacoes
+                FROM extratos_bb
+                WHERE ({where}) AND valor < 0 {tipo_excluir_clause}
+                ORDER BY dt_balancete DESC
+                LIMIT 50
+            """
+            det = sess.execute(text(sql_det), params).fetchall()
+            sess.close()
+            if res:
+                for ano, qtd, pago in res:
+                    linhas.append(f"{label} {ano}: {qtd} lançamentos | Pago R$ {pago:,.2f}")
+                    total_geral += pago or 0.0
+            else:
+                linhas.append(f"{label}: nenhum lançamento encontrado")
+
+            if det:
+                detalhes.append(f"Detalhes {label}:")
+                for row in det:
+                    dt, valor, hist, histc, fat, obs = row
+                    comp = f"{hist or ''} {histc or ''}".strip()
+                    fat_obs = fat or obs or ""
+                    detalhes.append(f"- {dt} | R$ {valor:,.2f} | {comp} | {fat_obs}")
+
+        if not linhas or total_geral == 0:
+            return f"Não encontrei pagamentos para {nome} nas duas bases."
+        linhas.append(f"Total geral pago para {nome}: R$ {total_geral:,.2f}")
+        if detalhes:
+            linhas.append("\n".join(detalhes))
+        return "\n".join(linhas)
+
+    # ==== OPENROUTER ====
+    def _openrouter_complete(self, prompt: str) -> str:
+        """
+        Faz chamada ao OpenRouter. Requer `openrouter_api_key` configurado em Configuracao.
+        """
+        if not self.api_key_openrouter:
+            raise Exception("API OpenRouter não configurada.")
+        url = "https://openrouter.ai/api/v1/chat/completions"
+        headers = {
+            "Authorization": f"Bearer {self.api_key_openrouter}",
+            "Content-Type": "application/json",
+            "HTTP-Referer": "http://localhost",
+            "X-Title": "Medcal Financeiro"
+        }
+        payload = {
+            "model": self.openrouter_model,
+            "messages": [
+                {"role": "system", "content": "Você é um assistente SQL e financeiro, responda apenas o que for pedido."},
+                {"role": "user", "content": prompt}
+            ],
+            "temperature": 0.1,
+        }
+        resp = requests.post(url, json=payload, headers=headers, timeout=30)
+        try:
+            resp.raise_for_status()
+        except Exception:
+            raise Exception(f"OpenRouter error {resp.status_code}: {resp.text}")
+        data = resp.json()
+        return data["choices"][0]["message"]["content"]

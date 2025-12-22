@@ -8,6 +8,9 @@ import time
 from datetime import datetime
 from modules.database.database import get_session, AgentRun
 from modules.core.search_engine import SearchEngine
+from modules.utils.logging_config import get_logger
+
+logger = get_logger(__name__)
 
 
 class BackgroundSearchManager:
@@ -47,12 +50,12 @@ class BackgroundSearchManager:
                     run.status = 'cancelled'
                     run.finished_at = datetime.now()
                     run.resumo = "Cancelado: sistema reiniciado"
-                    print(f"[BACKGROUND] Execução órfã {run.id} marcada como cancelada")
+                    logger.warning("Execucao orfa %s marcada como cancelada", run.id)
             
             session.commit()
             session.close()
         except Exception as e:
-            print(f"[BACKGROUND] Erro ao limpar órfãos: {e}")
+            logger.error("Erro ao limpar orfaos: %s", e, exc_info=True)
     
     def is_running(self) -> bool:
         """Verifica se há uma busca em andamento"""
@@ -101,7 +104,7 @@ class BackgroundSearchManager:
         session.close()
         return result
     
-    def start_search(self, dias=60, estados=['RN', 'PB', 'PE', 'AL'], fontes=None) -> dict:
+    def start_search(self, dias=60, estados=None, fontes=None) -> dict:
         """
         Inicia uma busca em background.
         
@@ -110,7 +113,7 @@ class BackgroundSearchManager:
             estados: Lista de UFs
             fontes: Lista de fontes. Ex: ['pncp'], ['pncp', 'femurn']. None = todas.
         """
-        
+        estados = estados or ['RN', 'PB', 'PE', 'AL']
         if self.is_running():
             return {
                 "success": False,
@@ -169,17 +172,17 @@ class BackgroundSearchManager:
             session.commit()
             
             # Envia notificação de conclusão via WhatsApp
-            self._notify_completion(session, novos)
+            # self._notify_completion(session, novos) # Desabilitado para economizar quota
             
             # Log
-            print(f"[BACKGROUND] Busca {run_id} concluída: {novos} novos")
+            logger.info("Busca %s concluida: %s novos", run_id, novos)
             
         except Exception as e:
             run.status = 'error'
             run.finished_at = datetime.now()
             run.resumo = f"❌ Erro: {str(e)[:200]}"
             session.commit()
-            print(f"[BACKGROUND] Erro na busca {run_id}: {e}")
+            logger.error("Erro na busca %s: %s", run_id, e, exc_info=True)
         
         finally:
             session.close()
@@ -200,7 +203,8 @@ class BackgroundSearchManager:
             
             try:
                 contacts_list = json.loads(config_contacts.valor)
-            except:
+            except Exception:
+                logger.warning("Config whatsapp_contacts invalida; ignorando notificacao.")
                 return
             
             if not contacts_list:
@@ -220,10 +224,10 @@ class BackgroundSearchManager:
                     notifier = WhatsAppNotifier(contact.get('phone'), contact.get('apikey'))
                     notifier.enviar_mensagem(msg)
                 except Exception as e:
-                    print(f"Erro ao notificar {contact.get('nome')}: {e}")
+                    logger.warning("Erro ao notificar %s: %s", contact.get('nome'), e, exc_info=True)
                     
         except Exception as e:
-            print(f"Erro na notificação de conclusão: {e}")
+            logger.warning("Erro na notificacao de conclusao: %s", e, exc_info=True)
     
     def cancel_search(self) -> dict:
         """Tenta cancelar a busca atual (marca como cancelada no banco)"""

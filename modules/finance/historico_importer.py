@@ -102,7 +102,8 @@ def importar_extrato_historico(file_path: str, session, banco_origem: Optional[s
                     'ano_referencia': ano_ref,
                     'arquivo_origem': file_path,
                     'observacoes': observacoes,
-                    'hash_lancamento': _gerar_hash(dt, historico, valor, documento)
+                    'hash_lancamento': _gerar_hash(dt, historico, valor, documento),
+                    'banco': '748' if 'sicred' in (banco_origem or '').lower() else None
                 }
                 todos_lancamentos.append(lancamento)
 
@@ -113,7 +114,8 @@ def importar_extrato_historico(file_path: str, session, banco_origem: Optional[s
         'resumos': resumos,
         'total_lancamentos': len(todos_lancamentos),
         'erros': [],
-        'avisos': []
+        'avisos': [],
+        'fonte': os.path.basename(file_path),
     }
     return salvar_extrato_db(session, resultado)
 

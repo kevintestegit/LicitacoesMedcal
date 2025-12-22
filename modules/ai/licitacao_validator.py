@@ -1,13 +1,12 @@
 """
-Módulo de Validação de Licitações com IA (Gemini)
+Módulo de Validação de Licitações com IA (OpenRouter)
 
 Este módulo usa IA para validar se uma licitação é realmente relevante
 para a Medcal Farma, evitando falsos positivos causados por matches genéricos.
 """
 
 import json
-import google.generativeai as genai
-from .ai_config import configure_genai, get_model
+from .ai_config import get_model
 
 
 # Contexto da empresa para o prompt
@@ -52,7 +51,7 @@ O QUE A MEDCAL NÃO VENDE:
 
 def validar_licitacao_com_ia(objeto: str, itens: list) -> dict:
     """
-    Usa IA (Gemini) para validar se uma licitação é relevante para a Medcal.
+    Usa IA (OpenRouter) para validar se uma licitação é relevante para a Medcal.
     
     Args:
         objeto: Texto do objeto da licitação
@@ -78,7 +77,6 @@ def validar_licitacao_com_ia(objeto: str, itens: list) -> dict:
     }
     
     try:
-        configure_genai()
         model = get_model(temperature=0.1)  # Baixa temperatura para respostas consistentes
         
         # Monta texto dos itens

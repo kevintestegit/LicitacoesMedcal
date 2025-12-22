@@ -4,7 +4,6 @@ streamlit
 sqlalchemy
 beautifulsoup4
 openpyxl
-google-generativeai
 playwright
 googlesearch-python
 pypdf
