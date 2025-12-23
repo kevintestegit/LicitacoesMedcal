@@ -121,9 +121,10 @@ def importar_extrato_historico(file_path: str, session, banco_origem: Optional[s
 
 
 def _localizar_cabecalho_generico(df: pd.DataFrame) -> Optional[pd.DataFrame]:
-    """Procura linha com cabeçalho contendo 'data' e 'descr'/'hist'."""
-    for idx, row in df.head(30).iterrows():
-        labels = [str(x).strip() for x in row.values]
+    """Procura linha com cabeçalho contendo 'data' e 'descr'/'hist'.
+    OTIMIZADO: Usa itertuples ao invés de iterrows"""
+    for idx, row in enumerate(df.head(30).itertuples(index=False)):
+        labels = [str(x).strip() for x in row]
         labels_lower = [l.lower() for l in labels if l]
         if any('data' in l for l in labels_lower) and any(('descr' in l) or ('hist' in l) for l in labels_lower):
             df_clean = df.iloc[idx+1:].reset_index(drop=True)

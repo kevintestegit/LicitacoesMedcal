@@ -31,6 +31,7 @@ env/
 *.db
 *.sqlite3
 licitacoes.db
+data/*.db
 
 # IDE
 .vscode/
@@ -53,3 +54,21 @@ Thumbs.db
 # Backups
 backups/backup_medcal_*.json
 !backups/backup_medcal_latest.json
+*.zip
+
+# Arquivos temporários gerados
+temp_*.xlsx
+temp_*.csv
+data/scraper_metrics.json
+data/whatsapp_notifications_sent.json
+data/distance_cache.json
+data/embeddings_cache.json
+
+# Claude/Gemini settings locais
+.claude/settings.local.json
+.gemini/
+
+# Arquivos de exportação
+*.xlsx
+!data/exemplo_extrato.csv
+

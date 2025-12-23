@@ -56,18 +56,30 @@ def importar_planilha_sesap(file_path: str, session, arquivo_origem: str = None)
     importados = duplicados = 0
     avisos = []
 
-    for _, row in df.iterrows():
+    # OTIMIZADO: itertuples é 10-50x mais rápido que iterrows
+    # Cria mapeamento de colunas para atributos namedtuple
+    col_names = list(df.columns)
+    
+    def get_val(row_tuple, col_key):
+        """Helper para acessar valor por chave do col_map de forma segura"""
+        col_name = col_map.get(col_key)
+        if col_name and col_name in col_names:
+            idx = col_names.index(col_name)
+            return row_tuple[idx]
+        return None
+
+    for row in df.itertuples(index=False):
         # Ignora linhas totalmente vazias
         if all(pd.isna(val) for val in row):
             continue
 
-        valor = _parse_float(row.get(col_map.get('valor_liquido')))
-        num_doc = _clean_str(row.get(col_map.get('num_doc')))
-        num_processo = _clean_str(row.get(col_map.get('num_processo')))
+        valor = _parse_float(get_val(row, 'valor_liquido'))
+        num_doc = _clean_str(get_val(row, 'num_doc'))
+        num_processo = _clean_str(get_val(row, 'num_processo'))
         if not num_doc and not num_processo and valor == 0:
             continue
 
-        dt_venc = _parse_date(row.get(col_map.get('dt_vencimento')))
+        dt_venc = _parse_date(get_val(row, 'dt_vencimento'))
 
         hash_key = _hash_registro(num_doc, num_processo, valor, dt_venc)
         existe = session.query(SesapPagamento).filter_by(observacao=hash_key).first()
@@ -76,19 +88,19 @@ def importar_planilha_sesap(file_path: str, session, arquivo_origem: str = None)
             continue
 
         pagamento = SesapPagamento(
-            filial=_clean_str(row.get(col_map.get('filial'))),
-            competencia=_clean_str(row.get(col_map.get('competencia'))),
-            unidade=_clean_str(row.get(col_map.get('unidade'))),
-            contrato=_clean_str(row.get(col_map.get('contrato'))),
-            cliente_fornecedor=_clean_str(row.get(col_map.get('cliente'))),
-            dt_emissao=_parse_date(row.get(col_map.get('dt_emissao'))),
+            filial=_clean_str(get_val(row, 'filial')),
+            competencia=_clean_str(get_val(row, 'competencia')),
+            unidade=_clean_str(get_val(row, 'unidade')),
+            contrato=_clean_str(get_val(row, 'contrato')),
+            cliente_fornecedor=_clean_str(get_val(row, 'cliente')),
+            dt_emissao=_parse_date(get_val(row, 'dt_emissao')),
             num_doc=num_doc,
             valor_liquido=valor,
             dt_vencimento=dt_venc,
             num_processo=num_processo,
-            status_sesap=_clean_str(row.get(col_map.get('status_sesap'))),
-            status_manual=_clean_str(row.get(col_map.get('status_manual'))),
-            banco=_inferir_banco(row.get(col_map.get('status_manual'))),
+            status_sesap=_clean_str(get_val(row, 'status_sesap')),
+            status_manual=_clean_str(get_val(row, 'status_manual')),
+            banco=_inferir_banco(get_val(row, 'status_manual')),
             observacao=hash_key,  # usado como dedupe simples
             arquivo_origem=arquivo_origem or os.path.basename(file_path)
         )

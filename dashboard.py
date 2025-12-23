@@ -37,14 +37,18 @@ from modules.core.opportunity_collector import prepare_results_for_pipeline
 from modules.core.background_search import background_manager  # Busca em background
 from modules.core.deep_analyzer import deep_analyzer  # Análise profunda de licitações
 
-# Inicializa Banco
-init_db()
-init_finance_db()
-init_finance_historico_db()
+# Inicializa Banco com cache para evitar re-init em cada rerun
+@st.cache_resource
+def _bootstrap_databases():
+    init_db()
+    init_finance_db()
+    init_finance_historico_db()
+
+_bootstrap_databases()
 
 # IA: OpenRouter-only (configurado via Configurações)
 
-st.set_page_config(page_title="Medcal Licitações", layout="wide", page_icon="🏥", initial_sidebar_state="expanded")
+st.set_page_config(page_title="Medcal Licitações", layout="wide", initial_sidebar_state="expanded")
 
 # --- CSS INJECTION ---
 def local_css(file_name):
@@ -201,10 +205,8 @@ def best_match_against_keywords(texto_item: str, keywords, nome_produto_catalogo
 # --- SIDEBAR ---
 with st.sidebar:
     st.markdown("""
-        <div style="padding: 12px 0 16px 0; text-align: center; border-bottom: 1px solid rgba(255,255,255,0.1); margin-bottom: 12px;">
-            <div style="font-size: 24px; margin-bottom: 4px;">🏥</div>
-            <div style="font-size: 14px; font-weight: 600; color: #ffffff; letter-spacing: -0.02em;">Medcal</div>
-            <div style="font-size: 9px; color: rgba(255,255,255,0.5); text-transform: uppercase; letter-spacing: 0.1em;">Gestão de Licitações</div>
+        <div class="sidebar-header-custom">
+            <div style="font-size: 20px; font-weight: 700; color: #ffffff; letter-spacing: -0.03em;">Medcal</div>
         </div>
     """, unsafe_allow_html=True)
     
@@ -215,11 +217,12 @@ with st.sidebar:
         mins = elapsed // 60
         secs = elapsed % 60
         st.markdown(f"""
-            <div style="background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); 
-                        padding: 10px; border-radius: 8px; margin-bottom: 12px; text-align: center;">
-                <div style="font-size: 20px; margin-bottom: 4px;">🔄</div>
-                <div style="font-size: 11px; color: white; font-weight: 500;">Buscando...</div>
-                <div style="font-size: 9px; color: rgba(255,255,255,0.7);">{mins}m {secs}s</div>
+            <div style="background: linear-gradient(135deg, var(--primary) 0%, var(--secondary) 100%); 
+                        padding: 16px; border-radius: 16px; margin: 12px; text-align: center;
+                        box-shadow: 0 8px 20px rgba(99,102,241,0.2); border: 1px solid rgba(255,255,255,0.1);">
+                <div style="font-size: 22px; margin-bottom: 8px; animation: spin 2s linear infinite;">🔄</div>
+                <div style="font-size: 12px; color: white; font-weight: 600;">Buscando Oportunidades</div>
+                <div style="font-size: 10px; color: rgba(255,255,255,0.8); margin-top: 4px;">Ativo há {mins}m {secs}s</div>
             </div>
         """, unsafe_allow_html=True)
         
@@ -230,7 +233,7 @@ with st.sidebar:
     elif search_status['status'] == 'completed' and search_status.get('finished_at'):
         # Mostra notificação de conclusão por 60 segundos
         finished = search_status['finished_at']
-        if isinstance(finished, datetime) and (datetime.now() - finished).seconds < 60:
+        if isinstance(finished, datetime) and (datetime.now() - finished).total_seconds() < 60:
             st.markdown("""
                 <div style="background: linear-gradient(135deg, #11998e 0%, #38ef7d 100%); 
                             padding: 10px; border-radius: 8px; margin-bottom: 12px; text-align: center;">
@@ -241,13 +244,14 @@ with st.sidebar:
             """.format(search_status.get('total_novos', 0)), unsafe_allow_html=True)
     
     page = st.radio(
-        "Navegação Principal",
+        "Navegação",
         ["📊 Dashboard", "🔍 Buscar", "🎯 Preparar", "🧠 Análise IA", "📦 Catálogo", "💰 Financeiro", "⚙️ Config"],
         label_visibility="collapsed"
     )
-    
+
     # Espaçador para empurrar a versão para o final
     st.markdown("<div style='flex-grow: 1; min-height: 50px;'></div>", unsafe_allow_html=True)
+
     
     st.markdown("""
         <div style="text-align: center; padding: 16px 0; margin-top: auto;">
@@ -303,8 +307,9 @@ def match_itens(session, licitacao_id, limiar=75):
         melhor_score = 0
         
         for prod in produtos:
-            keywords = [k.strip() for k in prod.palavras_chave.split(',') if k.strip() and len(k.strip()) > 3]
-            keywords.append(prod.nome)
+            raw_kw = prod.palavras_chave or ""
+            keywords = [k.strip() for k in raw_kw.split(',') if k.strip() and len(k.strip()) > 3]
+            keywords.append(prod.nome or "")
             score, _ = best_match_against_keywords(item_desc, keywords, nome_produto_catalogo=prod.nome)
             if score > melhor_score:
                 melhor_match = prod
@@ -946,7 +951,7 @@ elif page == "Buscar Licitações":
     elif search_status['status'] == 'completed' and search_status.get('finished_at'):
         finished = search_status['finished_at']
         if isinstance(finished, datetime):
-            tempo_desde = (datetime.now() - finished).seconds
+            tempo_desde = int((datetime.now() - finished).total_seconds())
             if tempo_desde < 300:  # Últimos 5 minutos
                 st.success(f"""
                 ✅ **Busca concluída!**  
@@ -1404,14 +1409,27 @@ elif page == "🧠 Análise de IA":
 elif page == "Dashboard":
     st.header("Painel de Controle")
     
+    # Importar verificador de prazo
+    from modules.utils.deadline_alerts import is_prazo_urgente, get_dias_restantes
+    
     session = get_session()
 
-    # Opção para filtrar licitações salvas
-    apenas_salvas = st.checkbox("⭐ Mostrar apenas licitações Salvas", value=False)
+    # === FILTROS ===
+    col_filtro1, col_filtro2 = st.columns(2)
+    
+    with col_filtro1:
+        apenas_salvas = st.checkbox("⭐ Mostrar apenas licitações Salvas", value=False)
+    
+    with col_filtro2:
+        # Filtro por categoria
+        categorias_disponiveis = ["Todas"] + ["Reagentes", "Equipamentos", "Serviços", "Locação", "Outros"]
+        categoria_filtro = st.selectbox("📁 Categoria", categorias_disponiveis, label_visibility="collapsed")
     
     query = session.query(Licitacao)
     if apenas_salvas:
         query = query.filter(Licitacao.status == 'Salva')
+    if categoria_filtro != "Todas":
+        query = query.filter(Licitacao.categoria == categoria_filtro)
     
     licitacoes_db = query.all()
     
@@ -1425,258 +1443,133 @@ elif page == "Dashboard":
     if not licitacoes:
         st.info("Nenhuma licitação no banco. Vá em 'Buscar Licitações' para começar.")
     else:
-        st.write(f"Mostrando {len(licitacoes)} licitações ordenadas por relevância.")
+        # Conta urgentes
+        urgentes = sum(1 for lic in licitacoes if is_prazo_urgente(lic.data_encerramento_proposta) and lic.status == 'Salva')
+        caption = f"📋 {len(licitacoes)} licitações"
+        if urgentes > 0:
+            caption += f" | ⚠️ {urgentes} com prazo urgente"
+        st.caption(caption)
         
-        for lic in licitacoes:
-            # Contar itens com match
-            total_itens = len(lic.itens)
-            itens_com_match = [i for i in lic.itens if i.produto_match_id is not None]
-            matches = len(itens_com_match)
+        # Divide licitações em pares para layout de 2 colunas
+        for i in range(0, len(licitacoes), 2):
+            cols = st.columns(2)
             
-            # Extrair nomes dos produtos (únicos)
-            matched_names = sorted(list(set([i.produto_match.nome for i in itens_com_match])))
-            
-            # Ícone e cor baseados no match
-            if matches > 0:
-                icon = "🔥" # Fogo para alta prioridade
-                names_str = ", ".join(matched_names[:3])
-                if len(matched_names) > 3:
-                    names_str += "..."
-                match_info = f"✅ {names_str} ({matches} itens)"
-            elif lic.modalidade == "Diário Oficial" or lic.modalidade == "Portal Externo":
-                icon = "📢"
-                match_info = "Aviso de Edital"
-            else:
-                icon = "⚠️"
-                match_info = "Sem match direto"
-            
-            # Data formatada
-            data_sessao_fmt = lic.data_sessao.strftime('%d/%m/%Y') if lic.data_sessao else "N/A"
-            
-            # Título do Expander (Unificado)
-            expander_title = f"{icon} [{lic.uf}] {lic.orgao} ({lic.modalidade}) — {match_info}"
-            
-            with st.expander(expander_title):
-                # --- CÁLCULO DE DISTÂNCIA ---
-                # Tenta limpar o nome do órgão para achar a cidade
-                clean_name = lic.orgao.upper()
-                for p in ["PREFEITURA MUNICIPAL DE ", "PREFEITURA DE ", "MUNICIPIO DE ", "FUNDO MUNICIPAL DE SAUDE DE ", "CAMARA MUNICIPAL DE ", "SECRETARIA MUNICIPAL DE SAUDE DE "]:
-                     clean_name = clean_name.replace(p, "")
-                # Remove possíveis sufixos após traço (ex: NATAL - RN -> NATAL)
-                if " - " in clean_name:
-                    clean_name = clean_name.split(" - ")[0]
-                
-                cidade_destino = f"{clean_name} - {lic.uf}"
-
-                # Endereço exato da base
-                origem_base = "Avenida Miguel Castro, 998-A, Nossa Senhora de Nazaré, Natal - RN"
-                distancia = get_road_distance(origem_base, cidade_destino)
-                
-                if distancia:
-                    custo_frete = distancia * 1.0 # R$ 1,00 por km
-                    st.info(f"🚚 **Logística:** Distância de **{distancia} km** | Custo Estimado (Ida): **R$ {custo_frete:.2f}**")
-                # ---------------------------
-
-                # Cabeçalho interno com informações principais
-                col_header, col_dates = st.columns([3, 1])
-                with col_header:
-                    st.markdown(f"**Objeto:** {lic.objeto}")
-                    st.caption(f"ID PNCP: {lic.pncp_id or 'N/A'}")
-                with col_dates:
-                    st.markdown(f"**📅 Sessão:** {data_sessao_fmt}")
-                    st.link_button("🔗 Abrir Link", lic.link)
-
-                st.divider()
-                
-                # Tabela de Itens
-                if lic.itens:
-                    st.markdown("###### 📦 Itens da Licitação")
-                    data_itens = []
-                    valor_total_proposta = 0
+            for col_idx, lic in enumerate(licitacoes[i:i+2]):
+                with cols[col_idx]:
+                    # Contar itens com match
+                    total_itens = len(lic.itens)
+                    itens_com_match = [item for item in lic.itens if item.produto_match_id is not None]
+                    matches = len(itens_com_match)
                     
-                    for item in lic.itens:
-                        match_nome = "❌ Sem Match"
-                        custo = 0
-                        preco_ref = 0
-                        fonte_ref = "-"
-                        v_unit_edital = item.valor_unitario if item.valor_unitario else 0
-                        diff_percent = 0
-                        
-                        if item.produto_match:
-                            match_nome = f"✅ {item.produto_match.nome}"
-                            custo = item.produto_match.preco_custo
-                            margem = item.produto_match.margem_minima / 100
-                            preco_venda = custo * (1 + margem)
-                            valor_total_proposta += preco_venda * item.quantidade
-                            
-                            preco_ref = item.produto_match.preco_referencia
-                            fonte_ref = item.produto_match.fonte_referencia
-                            
-                            if v_unit_edital > 0 and custo > 0:
-                                diff_percent = ((v_unit_edital - custo) / custo) * 100
-                        
-                        data_itens.append({
-                            "Item": item.numero_item,
-                            "Descrição": item.descricao,
-                            "Qtd": item.quantidade,
-                            "Unidade": item.unidade,
-                            "Valor Unit. (Edital)": f"R$ {v_unit_edital:,.2f}",
-                            "Match": match_nome
-                        })
-                        
-                    st.dataframe(
-                        pd.DataFrame(data_itens), 
-                        width='stretch',
-                        column_config={
-                            "Item": st.column_config.NumberColumn(width="small"),
-                            "Descrição": st.column_config.TextColumn(width="large"),
-                        },
-                        hide_index=True
-                    )
+                    # Extrair nomes dos produtos (únicos)
+                    matched_names = sorted(list(set([item.produto_match.nome for item in itens_com_match])))
                     
+                    # Ícone e cor baseados no match
                     if matches > 0:
-                        st.success(f"💰 Potencial de Proposta: R$ {valor_total_proposta:,.2f} (Baseado no seu custo + margem)")
-                else:
-                    st.info("Nenhum item detalhado encontrado.")
-                
-                # Ações Extras
-                st.markdown("---")
-                col_act1, col_act2, col_act3, col_act4, col_act5, col_act6 = st.columns(6)
-                
-                with col_act1:
-                    if st.button("📂 Ver Arquivos", key=f"btn_arq_{lic.id}"):
-                        with st.spinner("Buscando arquivos..."):
-                            client = PNCPClient()
-                            # Reconstrói dict mínimo
-                            parts = lic.pncp_id.split('-') if lic.pncp_id else []
-                            if len(parts) >= 3:
-                                lic_dict = {"cnpj": parts[0], "ano": parts[1], "seq": parts[2]}
-                                arquivos = client.buscar_arquivos(lic_dict)
-                                if arquivos:
-                                    st.write("**Arquivos:**")
-                                    for arq in arquivos:
-                                        st.markdown(f"- [{arq['titulo']}]({arq['url']})")
+                        icon = "🔥"
+                        names_str = ", ".join(matched_names[:2])
+                        if len(matched_names) > 2:
+                            names_str += "..."
+                        match_info = f"✅ {names_str}"
+                    elif lic.modalidade == "Diário Oficial" or lic.modalidade == "Portal Externo":
+                        icon = "📢"
+                        match_info = "Aviso"
+                    else:
+                        icon = "⚠️"
+                        match_info = "Sem match"
+                    
+                    # Data formatada
+                    data_sessao_fmt = lic.data_sessao.strftime('%d/%m') if lic.data_sessao else "N/A"
+                    
+                    # Título
+                    orgao_curto = lic.orgao  # Sem truncamento
+                    expander_title = f"{icon} [{lic.uf}] {orgao_curto}"
+                    
+                    # Card com borda visual
+                    # Preparar itens HTML
+                    itens_html = ""
+                    if lic.itens:
+                        for item in lic.itens[:5]:  # Mostrar até 5 itens
+                            match_icon = "✅" if item.produto_match_id else "⬜"
+                            desc_curta = item.descricao or ""  # Sem truncamento
+                            itens_html += f"<div style='font-size:11px;color:#6b7280;margin:2px 0;'>{match_icon} {desc_curta}</div>"
+                        if len(lic.itens) > 5:
+                            itens_html += f"<div style='font-size:10px;color:#9ca3af;'>+{len(lic.itens) - 5} itens</div>"
+                    
+                    # Calcular distância
+                    clean_name = lic.orgao.upper()
+                    for p in ["PREFEITURA MUNICIPAL DE ", "PREFEITURA DE ", "MUNICIPIO DE ", "FUNDO MUNICIPAL DE SAUDE DE "]:
+                        clean_name = clean_name.replace(p, "")
+                    if " - " in clean_name:
+                        clean_name = clean_name.split(" - ")[0]
+                    cidade_destino = f"{clean_name} - {lic.uf}"
+                    origem_base = "Avenida Miguel Castro, 998-A, Nossa Senhora de Nazaré, Natal - RN"
+                    distancia = get_road_distance(origem_base, cidade_destino)
+                    dist_html = f"<div style='font-size:10px;color:#6b7280;margin-bottom:6px;'>🚚 {distancia} km</div>" if distancia else ""
+                    
+                    objeto_curto = lic.objeto or ""  # Sem truncamento - mostra texto completo
+                    
+                    # Indicador de status e urgência
+                    status_icon = "⭐" if lic.status == 'Salva' else ""
+                    prazo_urgente = is_prazo_urgente(lic.data_encerramento_proposta)
+                    urgente_badge = "<span class='badge-urgente'>⏰ URGENTE</span>" if prazo_urgente and lic.status == 'Salva' else ""
+                    dias_rest = get_dias_restantes(lic.data_encerramento_proposta)
+                    
+                    # === CARD UNIFICADO COM st.container ===
+                    with st.container(border=True):
+                        # Cabeçalho com badge de urgência
+                        header_html = f"**{icon} [{lic.uf}] {orgao_curto} {status_icon}** {urgente_badge}"
+                        st.markdown(header_html, unsafe_allow_html=True)
+                        
+                        # Info com dias restantes
+                        prazo_txt = f"⏰ {dias_rest}d" if dias_rest >= 0 else ""
+                        st.caption(f"📅 {data_sessao_fmt} | {lic.modalidade} | {match_info} {prazo_txt}")
+                        
+                        # Objeto
+                        st.write(objeto_curto)
+                        
+                        # Distância
+                        if distancia:
+                            st.caption(f"🚚 {distancia} km")
+                        
+                        # Itens
+                        if lic.itens:
+                            st.divider()
+                            for item in lic.itens[:5]:
+                                match_icon_item = "✅" if item.produto_match_id else "⬜"
+                                desc_item = item.descricao or ""
+                                st.markdown(f"<span style='font-size:12px;color:#6b7280;'>{match_icon_item} {desc_item}</span>", unsafe_allow_html=True)
+                            if len(lic.itens) > 5:
+                                st.caption(f"+{len(lic.itens) - 5} itens")
+                        
+                        st.divider()
+                        
+                        # === BOTÕES DENTRO DO CARD ===
+                        c1, c2, c3 = st.columns(3)
+                        with c1:
+                            st.link_button("🔗 Link", lic.link, use_container_width=True)
+                        with c2:
+                            label_salvar = "⭐ Fixar" if lic.status != 'Salva' else "❌ Desafixar"
+                            if st.button(label_salvar, key=f"save_{lic.id}", use_container_width=True):
+                                if lic.status == 'Salva':
+                                    lic.status = 'Nova'
                                 else:
-                                    st.warning("Nenhum arquivo anexado encontrado no PNCP.")
-                            else:
-                                st.error("ID PNCP inválido para busca de arquivos.")
-
-                with col_act2:
-                    if st.button("🧠 Análise IA", key=f"btn_ai_{lic.id}"):
-                        # Redireciona ou executa análise inline
-                        st.info("Para análise detalhada, use a aba '🧠 Análise de IA' no menu lateral.")
-
-                with col_act3:
-                    if st.button("📱 WhatsApp", key=f"btn_wpp_{lic.id}"):
-                        import json
-                        session = get_session()
-
-                        # Tenta puxar o edital/anexos direto do PNCP para compartilhar no WhatsApp
-                        edital_link = None
-                        if lic.pncp_id:
-                            try:
-                                parts = lic.pncp_id.split('-')
-                                if len(parts) >= 3:
-                                    pncp_client = PNCPClient()
-                                    lic_dict = {"cnpj": parts[0], "ano": parts[1], "seq": parts[2]}
-                                    arquivos = pncp_client.buscar_arquivos(lic_dict) or []
-
-                                    # Prioriza PDF que contenha "edital" no título
-                                    pdfs = [a for a in arquivos if (a.get("url") or "").lower().endswith(".pdf") or (a.get("nome") or "").lower().endswith(".pdf")]
-                                    edital_pdf = next((a for a in pdfs if "edital" in (a.get("titulo") or "").lower()), None)
-                                    alvo = edital_pdf or (pdfs[0] if pdfs else None)
-                                    if alvo:
-                                        edital_link = alvo.get("url")
-                            except Exception as e:
-                                print(f"[WhatsApp] Falha ao buscar edital PNCP: {e}")
-
-                        # Tenta buscar configuração nova (múltiplos contatos)
-                        config_contacts = session.query(Configuracao).filter_by(chave='whatsapp_contacts').first()
-
-                        contacts_list = []
-                        if config_contacts and config_contacts.valor:
-                            try:
-                                contacts_list = json.loads(config_contacts.valor)
-                            except:
-                                pass
-
-                        # Fallback: tenta configuração antiga (1 telefone)
-                        if not contacts_list:
-                            conf_phone = session.query(Configuracao).filter_by(chave='whatsapp_phone').first()
-                            conf_key = session.query(Configuracao).filter_by(chave='whatsapp_apikey').first()
-                            if conf_phone and conf_key and conf_phone.valor and conf_key.valor:
-                                contacts_list = [{"nome": "Principal", "phone": conf_phone.valor, "apikey": conf_key.valor}]
-
-                        session.close()
-
-                        if not contacts_list:
-                            st.error("Configure o WhatsApp na aba Configurações!")
-                        else:
-                            # Monta mensagem
-                            itens_str = ""
-                            # Prioriza itens com match para destacar o motivo do interesse
-                            target_list = [i for i in lic.itens if i.produto_match_id]
-                            if not target_list: target_list = lic.itens
-
-                            for i in target_list[:5]:
-                                itens_str += f"- {i.descricao[:60]}...\n"
-                            if len(target_list) > 5:
-                                itens_str += f"... (+{len(target_list)-5} itens)"
-
-                            msg = f"🚀 *Oportunidade Selecionada*\n\n"
-                            msg += f"🏛 *{lic.orgao}* ({lic.uf})\n"
-                            msg += f"📋 {lic.modalidade}\n\n"
-                            msg += f"📦 *Destaques:*\n{itens_str}\n"
-                            msg += f"🔗 {lic.link}"
-                            if edital_link:
-                                msg += f"\n📑 Edital (PDF): {edital_link}"
-
-                            # Envia para todos os contatos configurados
-                            enviados = 0
-                            erros = []
-                            for contact in contacts_list:
-                                notifier = WhatsAppNotifier(contact.get('phone'), contact.get('apikey'))
-                                if notifier.enviar_mensagem(msg):
-                                    enviados += 1
+                                    lic.status = 'Salva'
+                                session.commit()
+                                st.rerun()
+                        with c3:
+                            if st.button("📱 WhatsApp", key=f"wpp_{lic.id}", use_container_width=True):
+                                import json
+                                config_contacts = session.query(Configuracao).filter_by(chave='whatsapp_contacts').first()
+                                contacts_list = json.loads(config_contacts.valor) if config_contacts and config_contacts.valor else []
+                                if contacts_list:
+                                    msg = f"🏛 *{lic.orgao}* ({lic.uf})\n📋 {lic.modalidade}\n🔗 {lic.link}"
+                                    for contact in contacts_list[:1]:
+                                        notifier = WhatsAppNotifier(contact.get('phone'), contact.get('apikey'))
+                                        notifier.enviar_mensagem(msg)
+                                    st.toast("✅ Enviado!", icon="✅")
                                 else:
-                                    erro_msg = notifier.ultimo_erro or "Erro desconhecido"
-                                    erros.append(f"{contact.get('nome', 'Sem nome')}: {erro_msg}")
-
-                            if enviados > 0:
-                                st.toast(f"✅ Enviado para {enviados} contato(s)!", icon="✅")
-
-                            if erros:
-                                st.error("❌ Erros ao enviar:\n" + "\n".join(erros))
-
-                with col_act4:
-                    # Botão de Salvar/Fixar
-                    label_salvar = "⭐ Fixar" if lic.status != 'Salva' else "❌ Desafixar"
-                    if st.button(label_salvar, key=f"btn_save_{lic.id}", help="Salva no banco permanente (não será apagado na limpeza)"):
-                        if lic.status == 'Salva':
-                            lic.status = 'Nova'
-                            st.toast("Licitação desafixada.", icon="ℹ️")
-                        else:
-                            lic.status = 'Salva'
-                            st.toast("Licitação salva com sucesso!", icon="✅")
-                        session.commit()
-                        time.sleep(0.5)
-                        st.rerun()
-
-                with col_act5:
-                    if st.button("✅ Participar", key=f"btn_part_{lic.id}", help="Marcar para participar desta licitação"):
-                        lic.status = "Participar"
-                        session.commit()
-                        st.toast("Marcada como Participar.", icon="✅")
-                        time.sleep(0.3)
-                        st.rerun()
-
-                with col_act6:
-                    if st.button("🚫 Ignorar", key=f"btn_ignore_{lic.id}", help="Ignorar esta licitação"):
-                        lic.status = "Ignorada"
-                        session.commit()
-                        st.toast("Marcada como Ignorada.", icon="⚠️")
-                        time.sleep(0.3)
-                        st.rerun()
+                                    st.error("Configure WhatsApp!")
 
 elif page == "💰 Gestão Financeira":
     st.header("💰 Gestão Financeira - Extratos Banco do Brasil")
@@ -2320,13 +2213,16 @@ elif page == "💰 Gestão Financeira":
             # Botão para Salvar (Verifica diferenças)
             if st.button("💾 Salvar Classificações"):
                 with st.spinner("Atualizando dados..."):
-                    # Otimização: bulk update ao invés de N queries individuais
+                    # Otimização: busca todos os registros em 1 query (evita N+1)
+                    ids = [row.Index for row in edited_df.itertuples()]
+                    rows_db = session.query(ExtratoBB).filter(ExtratoBB.id.in_(ids)).all()
+                    db_by_id = {r.id: r for r in rows_db}
+                    
                     updates = []
 
                     for row in edited_df.itertuples():
                         lanc_id = row.Index
-                        # Busca original no banco usando o ID do índice
-                        lanc_db = session.query(ExtratoBB).get(lanc_id)
+                        lanc_db = db_by_id.get(lanc_id)
 
                         if not lanc_db:
                             continue

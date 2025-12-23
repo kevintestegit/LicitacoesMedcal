@@ -216,10 +216,13 @@ class FinanceAI:
             colunas_presentes = list(df.columns)
 
         linhas = []
-        for _, row in df.head(max_rows).iterrows():
+        # OTIMIZADO: itertuples é 10-50x mais rápido que iterrows
+        col_to_idx = {col: idx for idx, col in enumerate(df.columns)}
+        for row in df.head(max_rows).itertuples(index=False):
             valores = []
             for col in colunas_presentes:
-                valores.append(self._format_cell(col, row.get(col)))
+                val = row[col_to_idx[col]] if col in col_to_idx else None
+                valores.append(self._format_cell(col, val))
             linhas.append("- " + " | ".join(valores))
 
         if len(df) > max_rows:

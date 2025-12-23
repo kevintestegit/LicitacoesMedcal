@@ -35,7 +35,9 @@ class Licitacao(Base):
     link = Column(String)
     
     status = Column(String, default='Nova')  # Nova, Em Analise, Participar, Ganha, Perdida, Ignorada
-    comentarios = Column(String)
+    categoria = Column(String, nullable=True)  # Categoria para favoritos: Reagentes, Equipamentos, Serviços, etc.
+    comentarios = Column(String)  # Comentários de texto do usuário
+    analise_profunda_json = Column(Text, nullable=True)  # Cache JSON da análise profunda (IA)
     data_captura = Column(DateTime, default=datetime.now)
 
     itens = relationship("ItemLicitacao", back_populates="licitacao", cascade="all, delete-orphan")

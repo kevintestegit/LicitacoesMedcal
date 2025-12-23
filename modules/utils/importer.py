@@ -66,18 +66,30 @@ def smart_map_columns(df):
 def normalize_imported_data(df, mapping):
     """
     Padroniza o DataFrame importado para o formato usado no sistema.
+    OTIMIZADO: Usa itertuples() (10-50x mais rápido que iterrows)
     """
     normalized = []
     
-    for index, row in df.iterrows():
+    # Cria dicionário reverso para mapear nomes de colunas para índices
+    col_to_idx = {col: idx for idx, col in enumerate(df.columns)}
+    
+    for row in df.itertuples(index=False):
+        # Acessa valores por índice usando o mapeamento
+        descricao_col = mapping["descricao"]
+        quantidade_col = mapping["quantidade"]
+        unidade_col = mapping["unidade"]
+        valor_unitario_col = mapping["valor_unitario"]
+        orgao_col = mapping["orgao"]
+        numero_edital_col = mapping["numero_edital"]
+        
         item = {
-            "descricao": str(row[mapping["descricao"]]) if mapping["descricao"] else "Sem Descrição",
-            "quantidade": float(row[mapping["quantidade"]]) if mapping["quantidade"] and pd.notnull(row[mapping["quantidade"]]) else 1.0,
-            "unidade": str(row[mapping["unidade"]]) if mapping["unidade"] else "UN",
-            "valor_unitario": float(row[mapping["valor_unitario"]]) if mapping["valor_unitario"] and pd.notnull(row[mapping["valor_unitario"]]) else 0.0,
-            "orgao": str(row[mapping["orgao"]]) if mapping["orgao"] else "Importado",
-            "numero_edital": str(row[mapping["numero_edital"]]) if mapping["numero_edital"] else f"IMP-{datetime.now().strftime('%Y%m%d')}",
-            "original_row": row.to_dict()
+            "descricao": str(row[col_to_idx[descricao_col]]) if descricao_col and descricao_col in col_to_idx else "Sem Descrição",
+            "quantidade": float(row[col_to_idx[quantidade_col]]) if quantidade_col and quantidade_col in col_to_idx and pd.notnull(row[col_to_idx[quantidade_col]]) else 1.0,
+            "unidade": str(row[col_to_idx[unidade_col]]) if unidade_col and unidade_col in col_to_idx else "UN",
+            "valor_unitario": float(row[col_to_idx[valor_unitario_col]]) if valor_unitario_col and valor_unitario_col in col_to_idx and pd.notnull(row[col_to_idx[valor_unitario_col]]) else 0.0,
+            "orgao": str(row[col_to_idx[orgao_col]]) if orgao_col and orgao_col in col_to_idx else "Importado",
+            "numero_edital": str(row[col_to_idx[numero_edital_col]]) if numero_edital_col and numero_edital_col in col_to_idx else f"IMP-{datetime.now().strftime('%Y%m%d')}",
+            "original_row": {df.columns[i]: row[i] for i in range(len(row))}
         }
         normalized.append(item)
         

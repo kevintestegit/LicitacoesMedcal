@@ -6,6 +6,13 @@ import concurrent.futures
 from threading import Lock
 import unicodedata
 
+# Cache de resultados para evitar chamadas repetidas
+try:
+    from .pncp_cache import get_cached_results, save_to_cache, get_orgaos_prioritarios
+    CACHE_DISPONIVEL = True
+except ImportError:
+    CACHE_DISPONIVEL = False
+
 class PNCPClient:
     BASE_URL = "https://pncp.gov.br/api/consulta/v1/contratacoes/publicacao"
     # Observação: a API frequentemente retorna muitas páginas por UF/modalidade.
@@ -256,7 +263,11 @@ class PNCPClient:
         "MATERIAL MEDICO", "MATERIAL MÉDICO", "MATERIAIS MEDICOS", "MATERIAIS MÉDICOS",
         "MATERIAL DESCARTAVEL", "MATERIAL DESCARTÁVEL", "MATERIAIS DESCARTAVEIS", "MATERIAIS DESCARTÁVEIS",
         "DESCARTAVEL", "DESCARTÁVEL", "DESCARTAVEIS", "DESCARTÁVEIS",
-        "COVID", "GASOMETRIA", "TESTE RÁPIDO", "TESTE RAPIDO"
+        "COVID", "GASOMETRIA", "TESTE RÁPIDO", "TESTE RAPIDO",
+        # Novos termos adicionados para cobertura máxima
+        "HOMOGENEIZADOR", "HOMOGENEIZADORES", "PCR", "BIOLOGIA MOLECULAR",
+        "AUTOCLAVE", "AUTOCLAVES", "ESTERILIZACAO", "ESTERILIZAÇÃO",
+        "CENTRIFUGA", "CENTRÍFUGA", "CENTRIFUGAS", "CENTRÍFUGAS"
     ]
 
     # Subconjunto prioritário para reduzir falsos positivos (usado como filtro inicial)
@@ -676,12 +687,28 @@ class PNCPClient:
         max_por_combo: int | None = 100,
         max_paginas_por_combo: int | None = None,
         page_workers: int = 2,
+        usar_cache: bool = True,
     ):
         """
         Busca licitações (Pregão/Dispensa) publicadas nos últimos X dias.
         Aplica filtros de termos positivos (OR) e negativos (NOT).
         Se apenas_abertas=True, exige dataEncerramentoProposta >= hoje.
+        
+        Args:
+            usar_cache: Se True, tenta usar cache de resultados recentes (30 min)
         """
+        # === CACHE: Verifica se há resultados em cache ===
+        if usar_cache and CACHE_DISPONIVEL:
+            cached = get_cached_results(
+                dias_busca=dias_busca,
+                estados=estados,
+                termos_positivos=termos_positivos,
+                apenas_abertas=apenas_abertas
+            )
+            if cached is not None:
+                print(f"[PNCP] ✅ Usando {len(cached)} resultados em cache")
+                return cached
+        
         if termos_negativos is None:
             termos_neg_norm = self._negativos_com_eventos_norm
         else:
@@ -951,6 +978,16 @@ class PNCPClient:
         print(f"Total APROVADO (após filtros): {len(resultados)}")
         print(f"{'='*80}\n")
 
+        # === CACHE: Salva resultados para próximas buscas ===
+        if usar_cache and CACHE_DISPONIVEL and resultados:
+            save_to_cache(
+                results=resultados,
+                dias_busca=dias_busca,
+                estados=estados,
+                termos_positivos=termos_positivos,
+                apenas_abertas=apenas_abertas
+            )
+
         return resultados
 
     def _parse_licitacao(self, item):
@@ -1142,3 +1179,68 @@ class PNCPClient:
         except Exception as e:
             print(f"Erro ao buscar preços: {e}")
             return None
+
+    def buscar_orgaos_prioritarios(self, dias_busca: int = 30) -> list:
+        """
+        Busca licitações diretamente nos órgãos de saúde prioritários.
+        Complementa a busca por termos com busca direta por CNPJ.
+        
+        Args:
+            dias_busca: Dias de histórico
+            
+        Returns:
+            Lista de licitações encontradas
+        """
+        if not CACHE_DISPONIVEL:
+            print("[PNCP] Cache não disponível, pulando busca por órgãos")
+            return []
+        
+        orgaos = get_orgaos_prioritarios()
+        if not orgaos:
+            return []
+        
+        resultados = []
+        hoje = datetime.now()
+        data_inicial = (hoje - timedelta(days=dias_busca)).strftime('%Y%m%d')
+        data_final = hoje.strftime('%Y%m%d')
+        
+        print(f"[PNCP] Buscando em {len(orgaos)} órgãos prioritários...")
+        
+        for cnpj, nome in orgaos.items():
+            try:
+                # Endpoint para buscar compras de um órgão específico
+                url = f"https://pncp.gov.br/api/consulta/v1/contratacoes/publicacao"
+                params = {
+                    "cnpjOrgao": cnpj,
+                    "dataInicial": data_inicial,
+                    "dataFinal": data_final,
+                    "pagina": "1",
+                    "tamanhoPagina": "20",
+                }
+                
+                resp = self.session.get(url, params=params, headers=self.headers, timeout=30)
+                if resp.status_code != 200:
+                    continue
+                
+                data = resp.json().get('data', [])
+                for item in data:
+                    data_enc = item.get('dataEncerramentoProposta')
+                    dias_restantes = self.calcular_dias(data_enc)
+                    if dias_restantes < 0:
+                        continue
+                    
+                    parsed = self._parse_licitacao(item)
+                    parsed['dias_restantes'] = dias_restantes
+                    parsed['motivo_aprovacao'] = f"Órgão prioritário: {nome}"
+                    parsed['fonte'] = "PNCP-ORGAO"
+                    resultados.append(parsed)
+                
+                if data:
+                    print(f"  ✓ {nome[:30]}: {len(data)} licitações")
+                    
+            except Exception as e:
+                print(f"  ✗ Erro em {nome[:30]}: {e}")
+        
+        print(f"[PNCP] Total de órgãos prioritários: {len(resultados)} licitações\n")
+        return resultados
+

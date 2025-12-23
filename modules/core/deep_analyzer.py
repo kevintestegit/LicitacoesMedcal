@@ -84,14 +84,24 @@ class DeepAnalyzer:
             if not lic:
                 return None
             
-            # Verifica se já tem análise salva (no campo comentarios como JSON)
-            if not force_refresh and lic.comentarios:
-                try:
-                    cached = json.loads(lic.comentarios)
-                    if cached.get('deep_analysis'):
-                        return DeepAnalysisResult(**cached['deep_analysis'])
-                except:
-                    pass
+            # Verifica se já tem análise salva (na coluna dedicada ou legado em comentarios)
+            if not force_refresh:
+                # Primeiro tenta a nova coluna
+                if lic.analise_profunda_json:
+                    try:
+                        cached = json.loads(lic.analise_profunda_json)
+                        if cached.get('deep_analysis'):
+                            return DeepAnalysisResult(**cached['deep_analysis'])
+                    except:
+                        pass
+                # Fallback para dados legados em comentarios
+                elif lic.comentarios:
+                    try:
+                        cached = json.loads(lic.comentarios)
+                        if cached.get('deep_analysis'):
+                            return DeepAnalysisResult(**cached['deep_analysis'])
+                    except:
+                        pass
             
             # 1. Coleta todos os PDFs do edital
             texto_completo = ""
@@ -279,8 +289,8 @@ Retorne APENAS o JSON, sem explicações adicionais.
                 texto_extraido_chars=len(texto_completo)
             )
             
-            # 7. Salva no banco
-            lic.comentarios = json.dumps({
+            # 7. Salva no banco (na coluna dedicada, não em comentarios)
+            lic.analise_profunda_json = json.dumps({
                 'deep_analysis': asdict(result),
                 'updated_at': datetime.now().isoformat()
             })
@@ -332,10 +342,20 @@ Retorne APENAS o JSON, sem explicações adicionais.
         session = get_session()
         try:
             lic = session.query(Licitacao).get(licitacao_id)
-            if lic and lic.comentarios:
-                cached = json.loads(lic.comentarios)
-                if cached.get('deep_analysis'):
-                    return DeepAnalysisResult(**cached['deep_analysis'])
+            if lic:
+                # Primeiro tenta a nova coluna
+                if lic.analise_profunda_json:
+                    cached = json.loads(lic.analise_profunda_json)
+                    if cached.get('deep_analysis'):
+                        return DeepAnalysisResult(**cached['deep_analysis'])
+                # Fallback para dados legados em comentarios
+                elif lic.comentarios:
+                    try:
+                        cached = json.loads(lic.comentarios)
+                        if cached.get('deep_analysis'):
+                            return DeepAnalysisResult(**cached['deep_analysis'])
+                    except:
+                        pass
         except:
             pass
         finally:
