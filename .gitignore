@@ -54,7 +54,7 @@ Thumbs.db
 # Backups
 backups/backup_medcal_*.json
 !backups/backup_medcal_latest.json
-*.zip
+
 
 # Arquivos temporários gerados
 temp_*.xlsx
