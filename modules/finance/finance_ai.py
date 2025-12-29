@@ -34,8 +34,8 @@ class FinanceAI:
     def analisar_pergunta(self, pergunta: str):
         """
         1. Transforma linguagem natural em SQL.
-        2. Executa SQL.
-        3. Gera resposta explicativa.
+        2. Executa SQL em AMBAS as bases (atual e histórico).
+        3. Gera resposta explicativa consolidada.
         """
         # Heurística: consultas conhecidas (Magnus / Paulo) respondem localmente sem LLM
         pergunta_lower = pergunta.lower()
@@ -72,8 +72,8 @@ class FinanceAI:
             # Limpeza básica do SQL gerado pela IA (remover markdown)
             sql_query = sql_query.replace('```sql', '').replace('```', '').strip()
             
-            # 2. Executar SQL
-            resultado_df = self._executar_sql(sql_query)
+            # 2. Executar SQL em AMBAS as bases
+            resultado_df = self._executar_sql_ambas_bases(sql_query)
             
             if resultado_df is None or resultado_df.empty:
                 return f"Não encontrei dados para responder sua pergunta.\n\nQuery tentada: `{sql_query}`"
@@ -145,6 +145,42 @@ class FinanceAI:
            - "Quantos estão baixados/pendentes?" → SELECT status, COUNT(*) FROM extratos_bb GROUP BY status
            - "Quanto foi pago de imposto em [mês]?" → WHERE tipo LIKE '%Imposto%' AND valor < 0 AND mes_referencia = 'Mês'
 
+        8. BUSCA POR FAIXA DE VALORES:
+           - Quando o usuário pedir algo "em torno de X", "entre X e Y", "aproximadamente X":
+             * Para entradas: valor BETWEEN X AND Y (valores positivos)
+             * Para saídas: valor BETWEEN -Y AND -X (valores negativos)
+           - Interprete "80 mil", "80k", "80.000" como 80000
+           - Exemplo: "recebimento entre 80 e 90 mil da SESAP" →
+             SELECT * FROM extratos_bb 
+             WHERE valor BETWEEN 80000 AND 90000 
+             AND (tipo IN ('Recebimento SESAP', 'Ordem Bancária', 'Hematologia', 'Coagulação', 'Ionograma') 
+                  OR historico LIKE '%SESAP%' OR historico LIKE '%632 Ordem Bancária%')
+             ORDER BY valor DESC
+
+        9. BUSCA DE LANÇAMENTOS ESPECÍFICOS:
+           - Quando o usuário quer "encontrar", "achar", "buscar" um lançamento específico:
+             * Retorne SELECT com colunas: dt_balancete, valor, tipo, historico, fatura, mes_referencia, ano_referencia
+             * Use ORDER BY dt_balancete DESC ou ORDER BY valor DESC conforme contexto
+             * LIMIT 20 para não retornar muitos resultados
+           - Exemplo: "encontre pagamentos acima de 50 mil" →
+             SELECT dt_balancete, valor, tipo, historico, fatura, mes_referencia, ano_referencia
+             FROM extratos_bb WHERE valor > 50000 ORDER BY valor DESC LIMIT 20
+
+        10. QUERIES DE AGREGAÇÃO (TOTAIS):
+           - SEMPRE inclua o valor agregado na query, não apenas o período!
+           - Para "quanto paguei de X em todos os anos":
+             SELECT ano_referencia, COUNT(*) as qtd, SUM(ABS(valor)) as total_pago
+             FROM extratos_bb WHERE valor < 0 AND tipo = 'X'
+             GROUP BY ano_referencia ORDER BY ano_referencia DESC
+           - Para "quanto paguei de impostos":
+             SELECT ano_referencia, mes_referencia, COUNT(*) as qtd, SUM(ABS(valor)) as total_impostos
+             FROM extratos_bb WHERE valor < 0 AND (tipo = 'Impostos' OR tipo LIKE '%Imposto%')
+             GROUP BY ano_referencia, mes_referencia ORDER BY ano_referencia DESC, 
+             CASE mes_referencia WHEN 'Jan' THEN 1 WHEN 'Fev' THEN 2 WHEN 'Mar' THEN 3 WHEN 'Abr' THEN 4 WHEN 'Mai' THEN 5 WHEN 'Jun' THEN 6 WHEN 'Jul' THEN 7 WHEN 'Ago' THEN 8 WHEN 'Set' THEN 9 WHEN 'Out' THEN 10 WHEN 'Nov' THEN 11 WHEN 'Dez' THEN 12 END DESC
+           - Para total geral sem agrupar:
+             SELECT 'Total' as periodo, COUNT(*) as qtd, SUM(ABS(valor)) as total
+             FROM extratos_bb WHERE valor < 0 AND tipo = 'Impostos'
+
         Pergunta do Usuário: "{pergunta}"
         SQL:
         """
@@ -164,9 +200,9 @@ class FinanceAI:
             
         return sql_query
 
-    def _executar_sql(self, query: str):
-        """Executa a query no banco financeiro selecionado"""
-        session = self.session_factory()
+    def _executar_sql(self, query: str, session_fn=None):
+        """Executa a query no banco financeiro especificado"""
+        session = (session_fn or self.session_factory)()
         try:
             # Segurança básica: impedir comandos de modificação
             if any(cmd in query.upper() for cmd in ['DROP', 'DELETE', 'UPDATE', 'INSERT', 'ALTER']):
@@ -180,28 +216,144 @@ class FinanceAI:
             session.close()
             raise e
 
+    def _executar_sql_ambas_bases(self, query: str):
+        """Executa a query em AMBAS as bases (atual e histórico) e consolida os resultados"""
+        dfs = []
+        
+        # Base Atual
+        try:
+            df_atual = self._executar_sql(query, get_finance_session)
+            if df_atual is not None and not df_atual.empty:
+                df_atual['_base'] = '📗 Atual'
+                dfs.append(df_atual)
+        except Exception:
+            pass  # Ignora erros na base atual
+        
+        # Base Histórico
+        try:
+            df_historico = self._executar_sql(query, get_finance_historico_session)
+            if df_historico is not None and not df_historico.empty:
+                df_historico['_base'] = '📘 Histórico'
+                dfs.append(df_historico)
+        except Exception:
+            pass  # Ignora erros na base histórica
+        
+        if not dfs:
+            return pd.DataFrame()
+        
+        # Consolida os resultados
+        resultado = pd.concat(dfs, ignore_index=True)
+        
+        # Reordena para mostrar a base primeiro
+        if '_base' in resultado.columns:
+            cols = ['_base'] + [c for c in resultado.columns if c != '_base']
+            resultado = resultado[cols]
+            resultado.rename(columns={'_base': 'Base'}, inplace=True)
+        
+        return resultado
+
     def _interpretar_resultado(self, pergunta: str, df: pd.DataFrame, query: str) -> str:
         """Pede para a IA transformar o dataframe em texto amigável"""
         dados_str = df.to_string()
         
-        prompt = f"""
-        Pergunta do usuário: "{pergunta}"
-        Query SQL executada: "{query}"
-        Resultado do banco de dados:
-        {dados_str}
+        prompt = f"""Você é um assistente financeiro. Responda de forma DIRETA e CURTA.
+
+Pergunta: "{pergunta}"
+Dados: {dados_str}
+
+REGRAS:
+1. Responda em UMA ÚNICA LINHA, sem quebras
+2. Use formato brasileiro: R$ 1.234,56 (ponto para milhares, vírgula para decimais)
+3. Seja direto: "O total foi R$ X" ou "Em 2025 você recebeu R$ X"
+4. NÃO use LaTeX, Markdown ou fórmulas matemáticas
+5. NÃO quebre valores em linhas separadas
+
+Resposta:"""
         
-        Com base nesse resultado, responda a pergunta do usuário de forma direta, amigável e em Português (Brasil).
-        Se for um valor monetário, formate como R$ X,XX.
-        """
         try:
             resp_text = self._openrouter_complete(prompt).strip()
+            # Limpa caracteres estranhos e quebras indesejadas
+            resp_text = self._limpar_resposta(resp_text)
         except Exception as e:
             return f"Erro ao gerar resposta ({self.provider or 'sem provedor'}): {e}"
-        detalhes = self._format_result_table(df)
-        # Acrescenta uma visão detalhada dos registros retornados para perguntas como "quais são"
+        
+        # Detecta se é uma query de agregação (SUM, COUNT, GROUP BY)
+        query_upper = query.upper()
+        is_agregacao = any(k in query_upper for k in ['SUM(', 'COUNT(', 'GROUP BY', 'AVG('])
+        
+        # Se for agregação, busca detalhes dos lançamentos individuais
+        detalhes = ""
+        if is_agregacao:
+            detalhes = self._buscar_detalhes_lancamentos(query)
+        else:
+            detalhes = self._format_result_table(df)
+        
         if detalhes:
             return f"{resp_text}\n\n**Detalhes (máx 50 linhas):**\n{detalhes}"
         return resp_text
+
+    def _limpar_resposta(self, texto: str) -> str:
+        """Remove caracteres estranhos e formatação quebrada da resposta da IA"""
+        import re
+        
+        # Remove tags HTML/LaTeX
+        texto = re.sub(r'<[^>]+>', '', texto)
+        texto = re.sub(r'\$\$?[^$]+\$\$?', '', texto)
+        
+        # Remove quebras de linha excessivas e caracteres isolados
+        texto = re.sub(r'\n+', ' ', texto)
+        texto = re.sub(r'\s+', ' ', texto)
+        
+        # Remove padrões como "R$ 1.234,56 e m e n t r a d a s" (caracteres separados)
+        # Detecta e corrige valores monetários com texto quebrado depois
+        texto = re.sub(r'(R\$\s*[\d.,]+)\s*([a-zA-Z])\s+([a-zA-Z])\s+([a-zA-Z])', 
+                      lambda m: m.group(1) + ' ' + m.group(2) + m.group(3) + m.group(4), texto)
+        
+        # Remove sequências de letras isoladas (e m e n t r a d a s -> entradas)
+        def juntar_letras(match):
+            return ''.join(match.group(0).split())
+        texto = re.sub(r'(?:\b[a-zA-Z]\s+){3,}[a-zA-Z]\b', juntar_letras, texto)
+        
+        # Remove prefixo <s> comum em alguns modelos
+        texto = re.sub(r'^<s>\s*', '', texto)
+        texto = re.sub(r'\s*</s>$', '', texto)
+        
+        return texto.strip()
+
+    def _buscar_detalhes_lancamentos(self, query_original: str) -> str:
+        """Extrai a condição WHERE da query de agregação e busca os lançamentos individuais"""
+        try:
+            query_upper = query_original.upper()
+            
+            # Extrai a parte WHERE da query original
+            if 'WHERE' in query_upper:
+                where_start = query_upper.find('WHERE')
+                # Encontra onde termina o WHERE (antes de GROUP BY, ORDER BY, ou fim)
+                where_end = len(query_original)
+                for keyword in ['GROUP BY', 'ORDER BY', 'LIMIT', 'HAVING']:
+                    pos = query_upper.find(keyword)
+                    if pos > where_start and pos < where_end:
+                        where_end = pos
+                
+                where_clause = query_original[where_start:where_end].strip()
+                
+                # Monta query de detalhes
+                detail_query = f"""
+                    SELECT dt_balancete, valor, tipo, historico, fatura, mes_referencia, ano_referencia
+                    FROM extratos_bb
+                    {where_clause}
+                    ORDER BY dt_balancete DESC
+                    LIMIT 50
+                """
+                
+                # Executa em ambas as bases
+                df_detalhes = self._executar_sql_ambas_bases(detail_query)
+                if df_detalhes is not None and not df_detalhes.empty:
+                    return self._format_result_table(df_detalhes)
+            
+            return ""
+        except Exception:
+            return ""
 
     def _format_result_table(self, df: pd.DataFrame, max_rows: int = 50) -> str:
         """Formata o dataframe em lista amigável e segura para exibir diretamente."""

@@ -1421,9 +1421,9 @@ elif page == "Dashboard":
         apenas_salvas = st.checkbox("⭐ Mostrar apenas licitações Salvas", value=False)
     
     with col_filtro2:
-        # Filtro por categoria
-        categorias_disponiveis = ["Todas"] + ["Reagentes", "Equipamentos", "Serviços", "Locação", "Outros"]
-        categoria_filtro = st.selectbox("📁 Categoria", categorias_disponiveis, label_visibility="collapsed")
+        # Filtro por categoria (usa categorias do classificador)
+        from modules.utils.category_classifier import CATEGORIAS_DISPONIVEIS
+        categoria_filtro = st.selectbox("📁 Categoria", CATEGORIAS_DISPONIVEIS, label_visibility="collapsed")
     
     query = session.query(Licitacao)
     if apenas_salvas:
@@ -1563,11 +1563,34 @@ elif page == "Dashboard":
                                 config_contacts = session.query(Configuracao).filter_by(chave='whatsapp_contacts').first()
                                 contacts_list = json.loads(config_contacts.valor) if config_contacts and config_contacts.valor else []
                                 if contacts_list:
-                                    msg = f"🏛 *{lic.orgao}* ({lic.uf})\n📋 {lic.modalidade}\n🔗 {lic.link}"
-                                    for contact in contacts_list[:1]:
-                                        notifier = WhatsAppNotifier(contact.get('phone'), contact.get('apikey'))
-                                        notifier.enviar_mensagem(msg)
-                                    st.toast("✅ Enviado!", icon="✅")
+                                    # Monta lista de itens (primeiros 15 chars de cada, max 5 itens)
+                                    itens_resumo = ""
+                                    if lic.itens:
+                                        itens_list = [f"• {item.descricao[:15]}..." for item in lic.itens[:5] if item.descricao]
+                                        if itens_list:
+                                            itens_resumo = "\n📦 *Itens:*\n" + "\n".join(itens_list)
+                                    
+                                    msg = f"🏛 *{lic.orgao}* ({lic.uf})\n📋 {lic.modalidade}\n⏰ Prazo: {lic.data_encerramento_proposta.strftime('%d/%m/%Y %H:%M') if lic.data_encerramento_proposta else 'N/A'}\n📝 {(lic.objeto or '')[:150]}{itens_resumo}\n🔗 {lic.link}"
+                                    enviados = 0
+                                    erros = []
+                                    import time
+                                    for i, contact in enumerate(contacts_list):  # Envia para TODOS os contatos
+                                        try:
+                                            # Delay entre envios para evitar rate limit do CallMeBot (503)
+                                            if i > 0:
+                                                time.sleep(3)
+                                            notifier = WhatsAppNotifier(contact.get('phone'), contact.get('apikey'))
+                                            resultado = notifier.enviar_mensagem(msg)
+                                            if resultado:
+                                                enviados += 1
+                                            else:
+                                                erros.append(f"{contact.get('name', contact.get('phone'))}: {notifier.ultimo_erro[:50]}")
+                                        except Exception as e:
+                                            erros.append(f"{contact.get('name', contact.get('phone'))}: {e}")
+                                    if enviados > 0:
+                                        st.toast(f"✅ Enviado para {enviados} contato(s)!", icon="✅")
+                                    if erros:
+                                        st.error(f"❌ Falhas: {'; '.join(erros[:2])}")
                                 else:
                                     st.error("Configure WhatsApp!")
 
@@ -1801,14 +1824,33 @@ elif page == "💰 Gestão Financeira":
     if meses_disponiveis:
         opcoes_meses = [f"{m.mes}/{m.ano}" for m in meses_disponiveis]
 
-        # Seletor de mês (colocado aqui para controlar todas as visualizações)
-        st.subheader("📝 Gerenciar Lançamentos")
+        # Inicializa session_state para o mês selecionado
+        if 'mes_financeiro_idx' not in st.session_state:
+            st.session_state.mes_financeiro_idx = 0
+        
+        # Função para sincronizar os seletores
+        def sincronizar_mes_topo():
+            st.session_state.mes_financeiro_idx = opcoes_meses.index(st.session_state.selector_mes_topo)
+        
+        def sincronizar_mes_tabela():
+            st.session_state.mes_financeiro_idx = opcoes_meses.index(st.session_state.selector_mes_tabela)
+
+        # Seletor de mês no TOPO (controla todas as visualizações)
         col_sel_mes, col_info = st.columns([1, 3])
         with col_sel_mes:
-            mes_selecionado_str = st.selectbox("📅 Mês", opcoes_meses, key="selector_mes_lancamentos")
-            resumo_selecionado = next(m for m in meses_disponiveis if f"{m.mes}/{m.ano}" == mes_selecionado_str)
+            mes_selecionado_str = st.selectbox(
+                "📅 Mês", 
+                opcoes_meses, 
+                index=st.session_state.mes_financeiro_idx,
+                key="selector_mes_topo",
+                on_change=sincronizar_mes_topo
+            )
         with col_info:
             st.caption("Selecione o mês para visualizar métricas, gráficos e gerenciar lançamentos.")
+        
+        # Obtém o resumo baseado no índice sincronizado
+        resumo_selecionado = meses_disponiveis[st.session_state.mes_financeiro_idx]
+        mes_selecionado_str = opcoes_meses[st.session_state.mes_financeiro_idx]
 
         st.divider()
 
@@ -1971,16 +2013,15 @@ elif page == "💰 Gestão Financeira":
         # --- Entradas ---
         with col_comp1:
             with st.expander("🍰 Composição das Entradas (Receita)", expanded=False):
-                # Categorias de detalhamento SESAP que devem ser agrupadas
-                categorias_sesap_detalhamento = ['Hematologia', 'Coagulação', 'Coagulacao', 'Ionograma', 'Recebimento SESAP']
+                # Categorias de detalhamento SESAP que devem ser agrupadas como "Recebimentos SESAP"
+                categorias_sesap = ['Hematologia', 'Coagulação', 'Coagulacao', 'Ionograma', 'Recebimento SESAP', 'Ordem Bancária']
 
-                # Total SESAP agregado (inclui tipo Recebimento SESAP e TEDs identificadas)
+                # Total SESAP agregado (soma Hematologia + Ionograma + Coagulação + Recebimento SESAP)
                 total_sesap_receita = session.query(func.sum(ExtratoBB.valor)).filter(
                     ExtratoBB.mes_referencia == resumo_selecionado.mes,
                     ExtratoBB.ano_referencia == resumo_selecionado.ano,
-                    sesap_condition,
-                    ExtratoBB.banco.in_(['001','748']),
-                    ExtratoBB.valor > 0
+                    ExtratoBB.valor > 0,
+                    ExtratoBB.tipo.in_(categorias_sesap)
                 ).scalar() or 0.0
 
                 # Outras categorias (excluindo SESAP e neutros)
@@ -1991,36 +2032,43 @@ elif page == "💰 Gestão Financeira":
                     ExtratoBB.mes_referencia == resumo_selecionado.mes,
                     ExtratoBB.ano_referencia == resumo_selecionado.ano,
                     ExtratoBB.valor > 0,
-                    ExtratoBB.tipo.notin_(tipos_neutros + categorias_sesap_detalhamento)
+                    ExtratoBB.tipo.notin_(tipos_neutros + categorias_sesap)
                 ).group_by(ExtratoBB.tipo).order_by(func.sum(ExtratoBB.valor).desc()).all()
 
-                total_receita_base = getattr(resumo_selecionado, 'total_entradas', 0.0)
+                total_receita_base = getattr(resumo_selecionado, 'total_entradas', 0.0) or 1.0  # Evita divisão por zero
 
-                if total_receita_base > 0:
-                                       # Primeiro mostra Recebimento SESAP agregado
-                    if total_sesap_receita > 0:
-                        pct = (total_sesap_receita / total_receita_base) * 100
-                        st.write(f"**Recebimento SESAP**")
-                        st.write(f"R$ {total_sesap_receita:,.2f} ({pct:.1f}%)")
-                        st.progress(min(int(pct), 100))
-
-                    # Depois mostra outras categorias
-                    for cat, valor in composicao_ent:
-                        if not cat: cat = "Outros / Não Identificado"
-                        pct = (valor / total_receita_base) * 100
-                        st.write(f"**{cat}**")
-                        st.write(f"R$ {valor:,.2f} ({pct:.1f}%)")
-                        st.progress(min(int(pct), 100))
-                else:
+                # Combina SESAP + outras categorias em uma lista única para ordenar
+                todas_categorias = []
+                
+                # Adiciona SESAP agregado
+                if total_sesap_receita > 0:
+                    todas_categorias.append(("Recebimentos SESAP (Hematologia, Ionograma, Coagulação)", total_sesap_receita))
+                
+                # Adiciona outras categorias
+                for cat, valor in composicao_ent:
+                    if not cat: cat = "Outros / Não Identificado"
+                    todas_categorias.append((cat, valor))
+                
+                # Ordena do maior para o menor
+                todas_categorias.sort(key=lambda x: x[1], reverse=True)
+                
+                # Exibe todas ordenadas
+                for cat, valor in todas_categorias:
+                    pct = (valor / total_receita_base) * 100
+                    st.write(f"**{cat}**")
+                    st.write(f"R$ {valor:,.2f} ({pct:.1f}%)")
+                    st.progress(min(int(pct), 100))
+                
+                if not todas_categorias:
                     st.info("Sem dados de entrada.")
 
         # --- Saídas ---
-            with col_comp2:
-                with st.expander("💸 Composição das Saídas (Despesas)", expanded=False):
-                    # Nota: valor é negativo no banco, usamos abs para somar
-                    composicao_sai = session.query(
-                        ExtratoBB.tipo, 
-                        func.sum(func.abs(ExtratoBB.valor))
+        with col_comp2:
+            with st.expander("💸 Composição das Saídas (Despesas)", expanded=False):
+                # Nota: valor é negativo no banco, usamos abs para somar
+                composicao_sai = session.query(
+                    ExtratoBB.tipo, 
+                    func.sum(func.abs(ExtratoBB.valor))
                 ).filter(
                     ExtratoBB.mes_referencia == resumo_selecionado.mes,
                     ExtratoBB.ano_referencia == resumo_selecionado.ano,
@@ -2046,8 +2094,16 @@ elif page == "💰 Gestão Financeira":
         st.markdown("#### 📋 Lançamentos do Mês")
         st.caption("Você pode alterar o **Tipo** e a **Fatura** diretamente na tabela abaixo. Útil para classificar 'Ordem Bancária' como 'Hematologia', Ionograma, etc.")
 
-        # Filtros da tabela
-        tf1, tf2, tf3, tf4 = st.columns([1, 1, 2, 1])
+        # Filtros da tabela - com seletor de mês SINCRONIZADO
+        tf0, tf1, tf2, tf3, tf4 = st.columns([1, 1, 1, 2, 1])
+        with tf0:
+            st.selectbox(
+                "📅 Mês", 
+                opcoes_meses, 
+                index=st.session_state.mes_financeiro_idx,
+                key="selector_mes_tabela",
+                on_change=sincronizar_mes_tabela
+            )
         with tf1:
             filtro_status = st.selectbox("Status", ["Todos", "Baixado", "Pendente"])
         with tf2:

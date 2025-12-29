@@ -31,7 +31,20 @@ class WhatsAppNotifier:
 
             response = requests.get(url, timeout=10)
 
-            if response.status_code == 200:
+            # Debug: log da resposta completa
+            print(f"[WhatsApp] Status: {response.status_code}, Resposta: {response.text[:200]}")
+
+            # CallMeBot retorna 200 mas pode ter erro no corpo da resposta
+            response_text = response.text.lower()
+            
+            if response.status_code == 200 and "message queued" in response_text:
+                return True
+            elif response.status_code == 200 and ("error" in response_text or "invalid" in response_text):
+                self.ultimo_erro = f"❌ API CallMeBot: {response.text[:200]}"
+                print(self.ultimo_erro)
+                return False
+            elif response.status_code == 200:
+                # Assume sucesso se status 200 e não tem erro explícito
                 return True
             else:
                 self.ultimo_erro = f"❌ API CallMeBot retornou erro: {response.status_code} - {response.text[:100]}"
