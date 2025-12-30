@@ -120,20 +120,37 @@ class LicitacaoFeature(Base):
     licitacao = relationship("Licitacao")
 
 # Configuracao do Banco
-BASE_DIR = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-DB_PATH = os.path.join(BASE_DIR, 'data', 'medcal.db')
+from .database_config import (
+    get_database_url, is_using_turso, get_connection_args, 
+    get_turso_connection, sync_with_turso
+)
+
+DATABASE_URL = get_database_url("medcal")
+
+# Se usando Turso, sincroniza o cache local antes de criar engine
+if is_using_turso():
+    try:
+        # Sincroniza cache local com Turso remoto
+        conn = get_turso_connection()
+        conn.sync()
+        print("✅ Conectado ao Turso (banco online)")
+    except Exception as e:
+        print(f"⚠️ Erro ao conectar ao Turso: {e}")
+
+# Cria engine SQLAlchemy usando cache local (sincronizado com Turso)
 engine = create_engine(
-    f'sqlite:///{DB_PATH}',
+    DATABASE_URL,
     echo=False,
-    connect_args={"check_same_thread": False, "timeout": 30},
+    connect_args=get_connection_args(),
     pool_pre_ping=True,
 )
+
 Session = sessionmaker(bind=engine)
 
 
 @event.listens_for(engine, "connect")
 def _set_sqlite_pragma(dbapi_connection, connection_record):
-    """Configura pragmas para reduzir 'database is locked' em cenários com threads."""
+    """Configura pragmas para performance."""
     try:
         cursor = dbapi_connection.cursor()
         cursor.execute("PRAGMA journal_mode=WAL;")
@@ -143,8 +160,20 @@ def _set_sqlite_pragma(dbapi_connection, connection_record):
     except Exception:
         pass
 
+
 def init_db():
     Base.metadata.create_all(engine)
+    # Sincroniza estrutura com Turso
+    if is_using_turso():
+        sync_with_turso()
+
 
 def get_session():
     return Session()
+
+
+def sync_to_cloud():
+    """Sincroniza dados locais com Turso (chame após escritas importantes)."""
+    if is_using_turso():
+        sync_with_turso()
+

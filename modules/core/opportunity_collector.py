@@ -164,7 +164,7 @@ def collect_opportunities(
 
 def prepare_results_for_pipeline(resultados_raw: Iterable[Dict[str, Any]]) -> List[Dict[str, Any]]:
     """
-    Aplica saneamento/dedupe/IDs estáveis em resultados já coletados.
+    Aplica saneamento/dedupe/IDs estáveis + ETL em resultados já coletados.
     Útil para pontos do dashboard que chamam scrapers diretamente.
     """
     vistos = set()
@@ -178,4 +178,14 @@ def prepare_results_for_pipeline(resultados_raw: Iterable[Dict[str, Any]]) -> Li
             continue
         vistos.add(key)
         consolidados.append(res)
+    
+    # Aplica transformações ETL
+    try:
+        from modules.etl import process_licitacoes
+        consolidados = process_licitacoes(consolidados)
+        logger.info("ETL aplicado: %s registros processados", len(consolidados))
+    except Exception as e:
+        logger.warning("Erro ao aplicar ETL, continuando sem transformações: %s", e)
+    
     return consolidados
+

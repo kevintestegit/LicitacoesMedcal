@@ -187,3 +187,58 @@ Arquivos incluídos no backup:
 - `data/medcal.db`, `data/financeiro.db`, `data/financeiro_historico.db`
 - `data/catalogo_produtos.json`, `data/whatsapp_notifications_sent.json`
 - Caches de embeddings e distância
+
+---
+
+## Sessão de 30/12/2024
+
+### 12) Migração para Banco Online (Turso)
+
+**Motivação**: Usuário precisava devolver a máquina alugada e não podia perder os dados dos bancos SQLite locais.
+
+**Tentativas frustradas**:
+- **Supabase (PostgreSQL)**: Bloqueado por firewall/IPv6 da rede, conexão timeout
+- **Turso (migração direta do SQLite)**: Muito lento devido latência de rede (~12.500 registros)
+
+**Solução final: Importação via Excel**
+
+Como o usuário já tinha exportado os dados financeiros para planilhas Excel, criamos um script que importa diretamente das planilhas para o Turso:
+
+- `scripts/import_excel_to_turso.py`:
+  - Lê `lancamentos_todos_meses_atual.xlsx` (4689 registros) 
+  - Lê `lancamentos_todos_meses_historico.xlsx` (7880 registros)
+  - Importa para tabela `extratos_bb` no Turso com hash único por lançamento
+
+**Arquivos criados/modificados**:
+
+| Arquivo | Descrição |
+|---------|-----------|
+| `modules/database/database_config.py` | Configuração híbrida SQLite local / Turso online |
+| `modules/database/database.py` | Engine com suporte a cache Turso sincronizado |
+| `modules/finance/database.py` | Idem para banco financeiro |
+| `modules/database/turso_sync.py` | Funções de sincronização manual |
+| `scripts/migrate_to_turso.py` | Script de migração (usado para tabelas pequenas) |
+| `scripts/migrate_all_to_turso.py` | Versão robusta com retry |
+| `scripts/import_excel_to_turso.py` | Importação via Excel (mais rápida) |
+| `scripts/clear_turso.py` | Limpeza do banco Turso remoto |
+| `.env` | Adicionadas `TURSO_DATABASE_URL` e `TURSO_AUTH_TOKEN` |
+
+**Status atual do Turso**:
+- ✅ `produtos`: 45 registros
+- ✅ `licitacoes`: 54 registros
+- ✅ `configuracoes`: 6 registros
+- ✅ `itens_licitacao`: 312 registros
+- ⏳ `extratos_bb`: Em importação via Excel (~12.500 registros)
+
+**Como usar em outra máquina**:
+1. Clonar repositório
+2. Copiar `.env` com credenciais Turso
+3. Rodar `pip install -r requirements.txt`
+4. Rodar `streamlit run dashboard.py`
+
+O sistema sincroniza automaticamente com o Turso na inicialização.
+
+### 13) Dependência adicionada
+
+- `libsql-experimental`: Driver Python para Turso (embedded replica)
+

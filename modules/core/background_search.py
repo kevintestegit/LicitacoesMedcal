@@ -54,8 +54,9 @@ class BackgroundSearchManager:
             
             session.commit()
             session.close()
-        except Exception as e:
-            logger.error("Erro ao limpar orfaos: %s", e, exc_info=True)
+        except Exception:
+            # Tabela agent_runs pode não existir no Turso - ignora silenciosamente
+            pass
     
     def is_running(self) -> bool:
         """Verifica se há uma busca em andamento"""
@@ -63,46 +64,53 @@ class BackgroundSearchManager:
             return True
         
         # Também verifica no banco (para caso de restart do app)
-        session = get_session()
-        running = session.query(AgentRun).filter_by(status='running').first()
-        session.close()
-        
-        return running is not None
+        try:
+            session = get_session()
+            running = session.query(AgentRun).filter_by(status='running').first()
+            session.close()
+            return running is not None
+        except Exception:
+            # Tabela agent_runs pode não existir
+            return False
     
     def get_current_status(self) -> dict:
         """Retorna o status atual da busca"""
-        session = get_session()
-        
-        # Busca a última execução
-        run = session.query(AgentRun).order_by(AgentRun.id.desc()).first()
-        
-        if not run:
+        try:
+            session = get_session()
+            
+            # Busca a última execução
+            run = session.query(AgentRun).order_by(AgentRun.id.desc()).first()
+            
+            if not run:
+                session.close()
+                return {"status": "idle", "message": "Nenhuma busca realizada"}
+            
+            result = {
+                "run_id": run.id,
+                "status": run.status,
+                "started_at": run.started_at,
+                "finished_at": run.finished_at,
+                "total_coletado": run.total_coletado,
+                "total_novos": run.total_novos,
+                "resumo": run.resumo
+            }
+            
+            if run.status == 'running':
+                elapsed = (datetime.now() - run.started_at).seconds
+                result["message"] = f"Busca em andamento... ({elapsed}s)"
+                result["elapsed_seconds"] = elapsed
+            elif run.status == 'completed':
+                result["message"] = f"Concluído: {run.total_novos} novas licitações"
+            elif run.status == 'error':
+                result["message"] = f"Erro: {run.resumo}"
+            else:
+                result["message"] = run.resumo or "Status desconhecido"
+            
             session.close()
-            return {"status": "idle", "message": "Nenhuma busca realizada"}
-        
-        result = {
-            "run_id": run.id,
-            "status": run.status,
-            "started_at": run.started_at,
-            "finished_at": run.finished_at,
-            "total_coletado": run.total_coletado,
-            "total_novos": run.total_novos,
-            "resumo": run.resumo
-        }
-        
-        if run.status == 'running':
-            elapsed = (datetime.now() - run.started_at).seconds
-            result["message"] = f"Busca em andamento... ({elapsed}s)"
-            result["elapsed_seconds"] = elapsed
-        elif run.status == 'completed':
-            result["message"] = f"Concluído: {run.total_novos} novas licitações"
-        elif run.status == 'error':
-            result["message"] = f"Erro: {run.resumo}"
-        else:
-            result["message"] = run.resumo or "Status desconhecido"
-        
-        session.close()
-        return result
+            return result
+        except Exception:
+            # Tabela agent_runs pode não existir no banco Turso
+            return {"status": "idle", "message": "Sistema de busca não configurado"}
     
     def start_search(self, dias=60, estados=None, fontes=None) -> dict:
         """
